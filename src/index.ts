@@ -1,11 +1,15 @@
 import type { EnvelopedEvent } from '@slack/bolt'
-import { getVerifiedData } from './signature'
 import type { SlackEvent } from '@slack/types'
+import { WebClient } from '@slack/web-api'
+import { handleCoreEvent } from './core/events'
+import { getVerifiedData } from './signature'
 
 const PORT = process.env.PORT || '8000'
 const { SLACK_APP_ID } = process.env
 
 const NOT_FOUND = new Response('', { status: 404 })
+
+const slack = new WebClient()
 
 Bun.serve({
   routes: {
@@ -16,24 +20,50 @@ Bun.serve({
         if (
           unsafeData.type === 'url_verification' &&
           typeof unsafeData.challenge === 'string'
-        )
+        ) {
+          console.debug('URL verification challenge received:', unsafeData)
           return new Response(unsafeData.challenge)
+        }
 
-        if (unsafeData.type !== 'event_callback') return NOT_FOUND
-        if (typeof unsafeData.api_app_id !== 'string') return NOT_FOUND
+        if (unsafeData.type !== 'event_callback') {
+          console.debug(`Unknown payload type:`, unsafeData)
+          return NOT_FOUND
+        }
+        if (typeof unsafeData.api_app_id !== 'string') {
+          console.debug('No app ID in payload:', unsafeData)
+          return NOT_FOUND
+        }
         const appId: string = unsafeData.api_app_id
 
+        console.debug(`Received event for app ID ${appId} (${SLACK_APP_ID})`)
         if (appId === SLACK_APP_ID) {
           // handle self event
           const data = await getVerifiedData(req)
-          if (!data.success) return NOT_FOUND
+          if (!data.success) {
+            console.warn(`Signature verification failed:`, unsafeData)
+            return NOT_FOUND
+          }
           const envelope: EnvelopedEvent = JSON.parse(data.data)
           const event = envelope.event as SlackEvent
+
+          handleCoreEvent({ event, envelope })
         } else {
           // handle workflow event
         }
 
         return new Response()
+      },
+    },
+    '/oauth/callback': {
+      GET: async (req) => {
+        const query = new URL(req.url).searchParams
+        const code = query.get('code')
+        if (!code) {
+          return new Response('No code in URL', { status: 400 })
+        }
+
+        // todo: update workflow
+        return new Response('Thank you!')
       },
     },
   },
