@@ -1,4 +1,10 @@
-import type { KnownBlock, ModalView } from '@slack/types'
+import type {
+  KnownBlock,
+  ModalView,
+  PlainTextElement,
+  PlainTextOption,
+  SectionBlockAccessory,
+} from '@slack/types'
 import type { Workflow } from '../database/workflows'
 import { getWorkflowSteps } from '../utils/workflows'
 import type { WorkflowStep } from './execute'
@@ -118,7 +124,8 @@ export async function generateStepEditView(
   workflow: Workflow,
   stepIndex: number
 ): Promise<ModalView> {
-  const step = getWorkflowSteps(workflow)[stepIndex]!
+  const workflowSteps = getWorkflowSteps(workflow)
+  const step = workflowSteps[stepIndex]!
 
   const spec = steps[step.type_id as keyof WorkflowStepMap]!
 
@@ -128,30 +135,13 @@ export async function generateStepEditView(
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `${def.name}${
+          text: `*${def.name}*${
             def.required ? ' _(required)_' : ''
           }\nCurrent: \`${step.inputs[key]}\``,
         },
-        accessory: {
-          type: 'static_select',
-          action_id: `update_input:${workflow.id}:${step.id}:${key}`,
-          option_groups: [
-            {
-              label: { type: 'plain_text', text: 'Dynamic content' },
-              options: [
-                {
-                  text: {
-                    type: 'plain_text',
-                    text: 'User that started this workflow',
-                  },
-                  value: '$!{ctx.trigger_user_id}',
-                },
-                { text: { type: 'plain_text', text: 'test' }, value: 'test' },
-              ],
-            },
-          ],
-        },
+        accessory: getStepInputAccessory(workflow, stepIndex, key),
       },
+      ...generateStepInputBlocks(workflow, stepIndex, key),
     ] satisfies KnownBlock[]
   })
 
@@ -166,5 +156,133 @@ export async function generateStepEditView(
       { type: 'section', text: { type: 'mrkdwn', text: '*Inputs*' } },
       ...inputBlocks,
     ],
+  }
+}
+
+function generateStepInputBlocks(
+  workflow: Workflow,
+  index: number,
+  inputKey: string
+): KnownBlock[] {
+  const workflowSteps = getWorkflowSteps(workflow)
+  const step = workflowSteps[index]!
+  const spec = steps[step.type_id as keyof WorkflowStepMap]
+  const input = spec.inputs[inputKey as keyof typeof spec.inputs]
+  const currentValue = step.inputs[inputKey]!
+
+  if (input.type === 'user' && !currentValue.startsWith('$')) {
+    return [
+      {
+        type: 'actions',
+        elements: [
+          {
+            type: 'users_select',
+            initial_user: currentValue || undefined,
+            action_id: `update_input:${workflow.id}:${step.id}:${inputKey}`,
+          },
+        ],
+      },
+    ]
+  }
+  if (input.type === 'channel' && !currentValue.startsWith('$')) {
+    return [
+      {
+        type: 'actions',
+        elements: [
+          {
+            type: 'conversations_select',
+            initial_conversation: currentValue || undefined,
+            action_id: `update_input:${workflow.id}:${step.id}:${inputKey}`,
+          },
+        ],
+      },
+    ]
+  }
+
+  return []
+}
+
+function getStepInputAccessory(
+  workflow: Workflow,
+  index: number,
+  inputKey: string
+): SectionBlockAccessory | undefined {
+  const workflowSteps = getWorkflowSteps(workflow)
+  const step = workflowSteps[index]!
+  const spec = steps[step.type_id as keyof WorkflowStepMap]
+  const input = spec.inputs[inputKey as keyof typeof spec.inputs]
+
+  if (input.type === 'user' || input.type === 'channel') {
+    const groups: {
+      label: PlainTextElement
+      options: PlainTextOption[]
+    }[] = [
+      {
+        label: { type: 'plain_text', text: 'Custom' },
+        options: [
+          {
+            text: { type: 'plain_text', text: `Choose a ${input.type}` },
+            value: JSON.stringify({ type: 'custom' }),
+          },
+        ],
+      },
+    ]
+
+    if (input.type === 'user') {
+      groups.push({
+        label: { type: 'plain_text', text: 'Workflow info' },
+        options: [
+          {
+            text: { type: 'plain_text', text: 'Person who used this workflow' },
+            value: JSON.stringify({
+              type: 'text',
+              text: '$!{ctx.trigger_user_id}',
+            }),
+          },
+        ],
+      })
+    }
+
+    for (const step of workflowSteps.slice(0, index)) {
+      const spec = steps[step.type_id as keyof WorkflowStepMap]
+      const options: PlainTextOption[] = []
+
+      let idx = 0
+      for (const [key, output] of Object.entries(spec.outputs)) {
+        idx++
+        if (output.type === input.type) {
+          options.push({
+            text: { type: 'plain_text', text: input.name },
+            value: JSON.stringify({
+              type: 'text',
+              text: `$!{outputs.${step.id}.${key}}`,
+            }),
+          })
+        }
+      }
+
+      if (options.length) {
+        groups.push({
+          label: { type: 'plain_text', text: `${idx}. ${spec.name}` },
+          options,
+        })
+      }
+    }
+
+    let initial: PlainTextOption | undefined = undefined
+    for (const group of groups) {
+      for (const option of group.options) {
+        if (JSON.parse(option.value!).text === step.inputs[inputKey]) {
+          initial = option
+        }
+      }
+    }
+
+    return {
+      type: 'static_select',
+      action_id: `update_input:${workflow.id}:${step.id}:${inputKey}`,
+      option_groups: groups,
+      initial_option: initial,
+    }
   }
 }

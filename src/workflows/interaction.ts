@@ -4,8 +4,6 @@ import { getWorkflowSteps } from '../utils/workflows'
 import { generateStepEditView, updateHomeTab } from './blocks'
 import { startWorkflow } from './execute'
 import slack from '../clients/slack'
-import { truncateText } from '../utils/formatting'
-import stepSpecs, { type WorkflowStepMap } from './steps'
 
 export async function handleInteraction(interaction: SlackAction) {
   if (interaction.type === 'block_actions') {
@@ -25,7 +23,13 @@ export async function handleInteraction(interaction: SlackAction) {
       if (stepIndex < 0) return
       const step = steps[stepIndex]!
 
-      step.inputs[inputKey!] = getValue(action)
+      const value = JSON.parse(getValue(action))
+
+      if (value.type === 'text') {
+        step.inputs[inputKey!] = value.text
+      } else if (value.type === 'custom') {
+        step.inputs[inputKey!] = ''
+      }
 
       workflow.steps = JSON.stringify(steps)
       await updateWorkflow(workflow)
@@ -73,6 +77,10 @@ function getValue(action: BlockElementAction) {
   switch (action.type) {
     case 'static_select':
       return action.selected_option.value
+    case 'users_select':
+      return JSON.stringify({ type: 'text', text: action.selected_user })
+    case 'conversations_select':
+      return JSON.stringify({ type: 'text', text: action.selected_conversation })
     default:
       return ''
   }
