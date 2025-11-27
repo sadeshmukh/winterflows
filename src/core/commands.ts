@@ -1,4 +1,4 @@
-import { App, type SlashCommand } from '@slack/bolt'
+import type { SlashCommand } from '@slack/bolt'
 import slack from '../clients/slack'
 import type {
   AppsManifestCreateArguments,

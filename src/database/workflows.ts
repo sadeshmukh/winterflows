@@ -15,7 +15,19 @@ export async function getWorkflowById(id: number) {
   return result[0]
 }
 
+export async function getWorkflowByAppId(appId: string) {
+  const result = await sql<
+    Workflow[]
+  >`SELECT * FROM workflows WHERE app_id = ${appId}`
+  return result[0]
+}
+
 export async function addWorkflow(workflow: Omit<Workflow, 'id'>) {
   const result = await sql<[Workflow]>`INSERT INTO workflows ${sql(workflow)}`
   return result[0]
+}
+
+export async function updateWorkflow(workflow: Workflow) {
+  const payload = { ...workflow, id: undefined }
+  await sql`UPDATE workflows SET ${sql(payload)} WHERE id = ${workflow.id}`
 }

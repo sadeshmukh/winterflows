@@ -3,6 +3,8 @@ import type { SlackEvent } from '@slack/types'
 import { handleCoreEvent } from './core/events'
 import { getVerifiedData } from './signature'
 import { handleCommand } from './core/commands'
+import slack from './clients/slack'
+import { getWorkflowByAppId, updateWorkflow } from './database/workflows'
 
 const PORT = process.env.PORT || '8000'
 const { SLACK_APP_ID } = process.env
@@ -74,9 +76,31 @@ Bun.serve({
       GET: async (req) => {
         const query = new URL(req.url).searchParams
         const code = query.get('code')
-        if (!code) {
-          return new Response('No code in URL', { status: 400 })
+        const appId = query.get('state')
+        if (!code || !appId) {
+          return new Response('Invalid request', { status: 400 })
         }
+
+        const workflow = await getWorkflowByAppId(appId)
+        if (!workflow) {
+          return new Response('The workflow is not found', { status: 400 })
+        }
+
+        let token: string
+        try {
+          const res = await slack.oauth.v2.access({
+            client_id: workflow.client_id,
+            client_secret: workflow.client_secret,
+            code,
+          })
+          token = res.access_token!
+        } catch (e) {
+          console.error('Error redeeming code for token', e)
+          return new Response('The OAuth code is invalid', { status: 400 })
+        }
+
+        workflow.access_token = token
+        await updateWorkflow(workflow)
 
         // todo: update workflow
         return new Response('Thank you!')

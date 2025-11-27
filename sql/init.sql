@@ -17,4 +17,10 @@ CREATE TABLE IF NOT EXISTS config_tokens (
     user_id TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY NOT NULL,
+    access_token TEXT,
+    scopes TEXT  -- space separated
+);
+
 -- all timestamps are in ms
