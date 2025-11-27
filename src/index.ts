@@ -184,6 +184,12 @@ Bun.serve({
         return new Response('Thank you!')
       },
     },
+
+    '/workflow/:id': async () => {
+      return new Response(
+        'Please do not click on the link. Rather, click the "Run workflow" button beneath it!'
+      )
+    },
   },
   port: PORT,
 })
