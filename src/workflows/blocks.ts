@@ -4,6 +4,22 @@ import { getWorkflowSteps } from '../utils/workflows'
 import type { WorkflowStep } from './execute'
 import type { WorkflowStepMap } from './steps'
 import steps from './steps'
+import slack from '../clients/slack'
+
+export async function updateHomeTab(workflow: Workflow, user: string) {
+  if (!workflow.access_token) return
+
+  const blocks =
+    user === workflow.creator_user_id
+      ? await generateWorkflowEditView(workflow)
+      : await generateWorkflowView(workflow)
+
+  await slack.views.publish({
+    token: workflow.access_token,
+    user_id: user,
+    view: { type: 'home', blocks },
+  })
+}
 
 export async function generateWorkflowEditView(
   workflow: Workflow
@@ -51,18 +67,23 @@ function generateStepEditBlocks<T extends keyof WorkflowStepMap>(
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `${def.name}${def.required ? ' _(required)_' : ''}`,
+          text: `${def.name}${def.required ? ' _(required)_' : ''}\nCurrent: ${
+            step.inputs[key as keyof (typeof step)['inputs']]
+          }`,
         },
         accessory: {
           type: 'static_select',
-          action_id: `update_input_${workflow.id}_${id}_${key}`,
+          action_id: `update_input:${workflow.id}:${step.id}:${key}`,
           option_groups: [
             {
               label: { type: 'plain_text', text: 'Dynamic content' },
               options: [
                 {
-                  text: { type: 'plain_text', text: 'something' },
-                  value: 'some value',
+                  text: {
+                    type: 'plain_text',
+                    text: 'User that started this workflow',
+                  },
+                  value: '$!{ctx.user_id}',
                 },
               ],
             },

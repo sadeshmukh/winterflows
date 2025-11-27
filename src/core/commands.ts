@@ -90,6 +90,10 @@ function generateManifest(
         request_url: `${EXTERNAL_URL}/slack/events`,
         bot_events: ['app_home_opened'],
       },
+      interactivity: {
+        is_enabled: true,
+        request_url: `${EXTERNAL_URL}/slack/interaction`,
+      },
       org_deploy_enabled: false,
       socket_mode_enabled: false,
       token_rotation_enabled: false,

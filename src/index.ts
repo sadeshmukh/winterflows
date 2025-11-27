@@ -1,4 +1,4 @@
-import type { EnvelopedEvent, SlashCommand } from '@slack/bolt'
+import type { EnvelopedEvent, SlackAction, SlashCommand } from '@slack/bolt'
 import type { SlackEvent } from '@slack/types'
 import slack from './clients/slack'
 import { handleCommand } from './core/commands'
@@ -6,6 +6,7 @@ import { handleCoreEvent } from './core/events'
 import { getWorkflowByAppId, updateWorkflow } from './database/workflows'
 import { getVerifiedData } from './signature'
 import { handleWorkflowEvent } from './workflows/events'
+import { handleInteraction } from './workflows/interaction'
 
 const PORT = process.env.PORT || '8000'
 const { SLACK_APP_ID } = process.env
@@ -58,7 +59,7 @@ Bun.serve({
 
           const data = await getVerifiedData(req, workflow.signing_secret)
           if (!data.success) {
-            console.warn(`Signature verification failed:`, unsafeData)
+            console.warn(`Signature verification failed for event:`, unsafeData)
             return NOT_FOUND
           }
           const envelope: EnvelopedEvent = JSON.parse(data.data)
@@ -85,6 +86,50 @@ Bun.serve({
         const res = await handleCommand(payload)
 
         return new Response(res)
+      },
+    },
+
+    '/slack/interaction': {
+      POST: async (req) => {
+        const unsafeData = new URLSearchParams(
+          await req.clone().text()
+        ).toJSON()
+        if (!unsafeData.payload || typeof unsafeData.payload !== 'string') {
+          console.debug('Invalid payload in data', unsafeData)
+          return NOT_FOUND
+        }
+        const unsafePayload = JSON.parse(unsafeData.payload)
+        if (
+          !unsafePayload ||
+          typeof unsafePayload !== 'object' ||
+          !unsafePayload.api_app_id ||
+          typeof unsafePayload.api_app_id !== 'string'
+        ) {
+          console.debug('No app ID in payload', unsafePayload)
+          return NOT_FOUND
+        }
+        const appId = unsafePayload.api_app_id
+
+        const workflow = await getWorkflowByAppId(appId)
+        if (!workflow) {
+          console.warn('Request to unknown app', unsafePayload)
+          return NOT_FOUND
+        }
+
+        const data = await getVerifiedData(req, workflow.signing_secret)
+        if (!data.success) {
+          console.warn(
+            `Signature verification failed for interaction:`,
+            unsafeData
+          )
+          return NOT_FOUND
+        }
+
+        const interaction = unsafePayload as SlackAction
+
+        handleInteraction(interaction)
+
+        return new Response()
       },
     },
 
