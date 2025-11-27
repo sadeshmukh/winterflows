@@ -1,15 +1,13 @@
-import type { EnvelopedEvent } from '@slack/bolt'
+import type { EnvelopedEvent, SlashCommand } from '@slack/bolt'
 import type { SlackEvent } from '@slack/types'
-import { WebClient } from '@slack/web-api'
 import { handleCoreEvent } from './core/events'
 import { getVerifiedData } from './signature'
+import { handleCommand } from './core/commands'
 
 const PORT = process.env.PORT || '8000'
 const { SLACK_APP_ID } = process.env
 
 const NOT_FOUND = new Response('', { status: 404 })
-
-const slack = new WebClient()
 
 Bun.serve({
   routes: {
@@ -54,6 +52,24 @@ Bun.serve({
         return new Response()
       },
     },
+
+    '/slack/command': {
+      POST: async (req) => {
+        const data = await getVerifiedData(req)
+        if (!data.success) {
+          console.warn(`Signature verification failed for command`)
+          return NOT_FOUND
+        }
+        const payload: SlashCommand = new URLSearchParams(
+          data.data
+        ).toJSON() as SlashCommand
+
+        const res = await handleCommand(payload)
+
+        return new Response(res)
+      },
+    },
+
     '/oauth/callback': {
       GET: async (req) => {
         const query = new URL(req.url).searchParams

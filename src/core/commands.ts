@@ -1,0 +1,86 @@
+import { App, type SlashCommand } from '@slack/bolt'
+import slack from '../clients/slack'
+import type {
+  AppsManifestCreateArguments,
+  AppsManifestCreateResponse,
+} from '@slack/web-api'
+import { addWorkflow } from '../database/workflows'
+import { respond } from '../utils/slack'
+import { getConfigToken } from '../database/config_tokens'
+
+export async function handleCommand(payload: SlashCommand) {
+  if (payload.command.endsWith('winterflows-create')) {
+    return await handleCreateCommand(payload)
+  }
+  return ''
+}
+
+async function handleCreateCommand(payload: SlashCommand) {
+  const name = payload.text
+  if (!name) {
+    return 'Please provide a name for the workflow.'
+  }
+
+  const configToken = await getConfigToken()
+  if (!configToken) {
+    return 'No app config token was set. Please contact the devs for assistance.'
+  }
+
+  ;(async () => {
+    let app: AppsManifestCreateResponse
+    try {
+      app = await slack.apps.manifest.create({
+        token: configToken.access_token,
+        manifest: generateManifest(name),
+      })
+    } catch (e) {
+      console.error('Failed to create app from manifest:', e)
+      await respond(payload, 'There was an error creating the app.')
+      return
+    }
+
+    await addWorkflow({
+      name,
+      app_id: app.app_id!,
+      client_id: app.credentials!.client_id!,
+      client_secret: app.credentials!.client_secret!,
+      signing_secret: app.credentials!.signing_secret!,
+      access_token: null,
+    })
+
+    const url = new URL(app.oauth_authorize_url!)
+    url.searchParams.set('state', app.app_id!)
+
+    await respond(payload, {
+      text: `Please visit <${url.toString()}|this link> and install the app to finish the workflow setup.`,
+    })
+  })()
+}
+
+function generateManifest(
+  name: string
+): AppsManifestCreateArguments['manifest'] {
+  return {
+    display_information: {
+      name: name,
+      description: 'Workflow created by Winterflows',
+    },
+    features: {
+      bot_user: {
+        display_name: name,
+        always_online: false,
+      },
+    },
+    oauth_config: {
+      redirect_urls: ['https://winterflows-dev.davidwhy.me/oauth/callback'],
+      scopes: {
+        bot: ['chat:write', 'chat:write.customize'],
+      },
+    },
+    settings: {
+      org_deploy_enabled: false,
+      socket_mode_enabled: false,
+      token_rotation_enabled: false,
+    },
+  }
+}

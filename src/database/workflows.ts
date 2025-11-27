@@ -14,3 +14,8 @@ export async function getWorkflowById(id: number) {
   const result = await sql<Workflow[]>`SELECT * FROM workflows WHERE id = ${id}`
   return result[0]
 }
+
+export async function addWorkflow(workflow: Omit<Workflow, 'id'>) {
+  const result = await sql<[Workflow]>`INSERT INTO workflows ${sql(workflow)}`
+  return result[0]
+}
