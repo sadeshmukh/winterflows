@@ -1,11 +1,23 @@
-import type { BlockElementAction, SlackAction } from '@slack/bolt'
+import type {
+  BlockElementAction,
+  SlackAction,
+  SlackViewAction,
+} from '@slack/bolt'
 import { getWorkflowById, updateWorkflow } from '../database/workflows'
 import { getWorkflowSteps } from '../utils/workflows'
-import { generateStepEditView, updateHomeTab } from './blocks'
-import { startWorkflow } from './execute'
+import {
+  generateNewStepView,
+  generateStepEditView,
+  updateHomeTab,
+} from './blocks'
+import { startWorkflow, type WorkflowStep } from './execute'
 import slack from '../clients/slack'
+import stepSpecs, { type WorkflowStepMap } from './steps'
+import { generateRandomId } from '../utils/formatting'
 
-export async function handleInteraction(interaction: SlackAction) {
+export async function handleInteraction(
+  interaction: SlackAction | SlackViewAction
+) {
   if (interaction.type === 'block_actions') {
     console.log(interaction)
     const action = interaction.actions[0]
@@ -69,7 +81,48 @@ export async function handleInteraction(interaction: SlackAction) {
         trigger_id: interaction.trigger_id,
         view: await generateStepEditView(workflow, stepIndex),
       })
+    } else if (actionId === 'new_step') {
+      if (action.type !== 'button') return
+
+      const { id } = JSON.parse(action.value!) as { id: number }
+      const workflow = await getWorkflowById(id)
+      if (!workflow || !workflow.access_token) return
+
+      await slack.views.open({
+        token: workflow.access_token,
+        trigger_id: interaction.trigger_id,
+        view: await generateNewStepView(workflow),
+      })
     }
+  } else if (interaction.type === 'view_submission') {
+    const stepId =
+      interaction.view.state.values.step!.value!.selected_option?.value
+    if (!stepId) return
+    const spec = stepSpecs[stepId as keyof WorkflowStepMap]
+    if (!spec) return
+
+    const { id } = JSON.parse(interaction.view.private_metadata) as {
+      id: number
+    }
+    const workflow = await getWorkflowById(id)
+    if (!workflow || !workflow.access_token) return
+
+    const inputs: Record<string, string> = {}
+    for (const key in spec.inputs) {
+      inputs[key] = ''
+    }
+
+    const step: WorkflowStep<any> = {
+      id: generateRandomId(),
+      type_id: stepId,
+      inputs,
+    }
+    const steps = getWorkflowSteps(workflow)
+    steps.push(step)
+    workflow.steps = JSON.stringify(steps)
+    await updateWorkflow(workflow)
+
+    await updateHomeTab(workflow, interaction.user.id)
   }
 }
 
@@ -80,7 +133,15 @@ function getValue(action: BlockElementAction) {
     case 'users_select':
       return JSON.stringify({ type: 'text', text: action.selected_user })
     case 'conversations_select':
-      return JSON.stringify({ type: 'text', text: action.selected_conversation })
+      return JSON.stringify({
+        type: 'text',
+        text: action.selected_conversation,
+      })
+    case 'rich_text_input':
+      return JSON.stringify({
+        type: 'text',
+        text: JSON.stringify(action.rich_text_value),
+      })
     default:
       return ''
   }

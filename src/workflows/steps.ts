@@ -47,12 +47,12 @@ function defineStep<
 
 async function sendMessageToUser(
   ctx: ExecutionContext,
-  { user_id }: { user_id: string }
+  { user_id, message }: { user_id: string; message: string }
 ) {
   const msg = await slack.chat.postMessage({
     token: ctx.token,
     channel: user_id,
-    text: 'Hello, Winterflows!',
+    blocks: [JSON.parse(message)],
   })
   return {
     ts: msg.ts!,
@@ -63,17 +63,22 @@ async function sendMessageToUser(
 
 const steps = {
   'test-dm-user': defineStep(sendMessageToUser, {
-    name: 'Send test message to user',
+    name: 'Send a message to a person',
     inputs: {
       user_id: {
-        name: 'User to send a message to',
+        name: 'User',
         required: true,
         type: 'user',
+      },
+      message: {
+        name: 'message',
+        required: true,
+        type: 'rich_text',
       },
     },
     outputs: {
       ts: {
-        name: 'Timestamp of sent message',
+        name: 'Timestamp of message',
         required: true,
         type: 'text',
       },

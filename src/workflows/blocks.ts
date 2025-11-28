@@ -61,6 +61,21 @@ export async function generateWorkflowEditView(
       type: 'header',
       text: { type: 'plain_text', text: 'Steps' },
     },
+    {
+      type: 'actions',
+      elements: [
+        {
+          type: 'button',
+          text: {
+            type: 'plain_text',
+            text: ':heavy_plus_sign: Add a step',
+            emoji: true,
+          },
+          action_id: 'new_step',
+          value: JSON.stringify({ id: workflow.id }),
+        },
+      ],
+    },
     ...stepBlocks,
   ]
 }
@@ -198,6 +213,19 @@ function generateStepInputBlocks(
       },
     ]
   }
+  if (input.type === 'rich_text') {
+    return [
+      {
+        type: 'actions',
+        elements: [
+          {
+            type: 'rich_text_input',
+            action_id: `update_input:${workflow.id}:${step.id}:${inputKey}`,
+          },
+        ],
+      },
+    ]
+  }
 
   return []
 }
@@ -284,5 +312,33 @@ function getStepInputAccessory(
       option_groups: groups,
       initial_option: initial,
     }
+  }
+}
+
+export async function generateNewStepView(
+  workflow: Workflow
+): Promise<ModalView> {
+  const blocks: KnownBlock[] = [
+    {
+      type: 'actions',
+      block_id: 'step',
+      elements: [
+        {
+          type: 'static_select',
+          action_id: 'value',
+          options: Object.entries(steps).map(([id, spec]) => ({
+            text: { type: 'plain_text', text: spec.name },
+            value: id,
+          })),
+        },
+      ],
+    },
+  ]
+  return {
+    type: 'modal',
+    title: { type: 'plain_text', text: 'Add a step' },
+    submit: { type: 'plain_text', text: 'Add' },
+    blocks,
+    private_metadata: JSON.stringify({ id: workflow.id }),
   }
 }
