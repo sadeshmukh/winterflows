@@ -1,6 +1,7 @@
 import {
   addWorkflowExecution,
   deleteWorkflowExecutionById,
+  getWorkflowExecutionById,
   updateWorkflowExecution,
   type WorkflowExecution,
 } from '../database/workflow_executions'
@@ -9,7 +10,7 @@ import { replaceRichText, replaceText } from '../utils/slack'
 import { getWorkflowSteps } from '../utils/workflows'
 import type { ExecutionContext } from './context'
 import type { WorkflowStepMap } from './steps'
-import stepSpecs from './steps'
+import stepSpecs, { PENDING } from './steps'
 
 export interface WorkflowStep<Type extends keyof WorkflowStepMap> {
   id: string
@@ -59,6 +60,9 @@ export async function proceedWorkflow(execution: WorkflowExecution) {
   const state = JSON.parse(execution.state) as ExecutionState
   const step = steps[execution.step_index]!
   const spec = stepSpecs[step.type_id as keyof WorkflowStepMap]
+  if (!spec) {
+    throw new Error(`Step \`${step.type_id}\` not found`)
+  }
 
   const replacements: Record<string, string> = {
     '$!{ctx.trigger_user_id}': state.trigger_user_id,
@@ -82,13 +86,41 @@ export async function proceedWorkflow(execution: WorkflowExecution) {
   }
 
   const ctx: ExecutionContext = {
+    execution,
+    step_id: step.id,
     trigger_user_id: state.trigger_user_id,
     token: workflow.access_token!,
     workflow,
   }
+
   const outputs = await spec.func(ctx, inputs as any)
+  if (outputs === PENDING) return
+  advanceWorkflow(execution.id, step.id, outputs)
+}
+
+export async function advanceWorkflow(
+  executionId: number,
+  stepId: string,
+  outputs: Record<string, string>
+) {
+  const execution = await getWorkflowExecutionById(executionId)
+  if (!execution) return
+  const steps = getWorkflowSteps(execution)
+
+  const stepIndex = steps.findIndex((s) => s.id === stepId)
+  if (stepIndex !== execution.step_index) {
+    console.warn(
+      `Workflow execution ${execution.id} repeated step #${stepIndex}`
+    )
+    return
+  }
+
+  // actually advance
+
+  const state = JSON.parse(execution.state) as ExecutionState
+
   for (const [key, value] of Object.entries(outputs)) {
-    state.outputs[`${step.id}.${key}`] = value
+    state.outputs[`${stepId}.${key}`] = value
   }
 
   execution.step_index++

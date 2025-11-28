@@ -104,10 +104,16 @@ function generateWorkflowStepBlocks<T extends keyof WorkflowStepMap>(
   const id = step.type_id
   const spec = steps[id]
 
-  let text = `${index + 1}. *${spec.name}*`
+  let text = ''
 
-  for (const [key, arg] of Object.entries(spec.inputs)) {
-    text += `\n${arg.name}: \`${step.inputs[key as keyof typeof step.inputs]}\``
+  if (spec) {
+    text += `${index + 1}. *${spec.name}*`
+
+    for (const [key, arg] of Object.entries(spec.inputs)) {
+      text += `\n${arg.name}: \`${step.inputs[key]}\``
+    }
+  } else {
+    text += `${index + 1}. This step no longer exists. Please remove it.`
   }
 
   return [
@@ -215,7 +221,18 @@ function generateStepInputBlocks(
   const workflowSteps = getWorkflowSteps(workflow)
   const step = workflowSteps[index]!
   const spec = steps[step.type_id as keyof WorkflowStepMap]
-  const input = spec.inputs[inputKey as keyof typeof spec.inputs]
+  if (!spec) {
+    return [
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: 'This step no longer exists. Please remove it.',
+        },
+      },
+    ]
+  }
+  const input = spec.inputs[inputKey]!
   const currentValue = step.inputs[inputKey]!
 
   const blocks: KnownBlock[] = []
@@ -257,6 +274,17 @@ function generateStepInputBlocks(
       },
     })
   }
+  if (input.type === 'text') {
+    blocks.push({
+      type: 'input',
+      label: { type: 'plain_text', text: ' ' },
+      element: {
+        type: 'plain_text_input',
+        initial_value: overrideValues[actionId] || currentValue || undefined,
+        action_id: actionId,
+      },
+    })
+  }
 
   return blocks
 }
@@ -269,7 +297,9 @@ function getStepInputAccessory(
   const workflowSteps = getWorkflowSteps(workflow)
   const step = workflowSteps[index]!
   const spec = steps[step.type_id as keyof WorkflowStepMap]
-  const input = spec.inputs[inputKey as keyof typeof spec.inputs]
+  if (!spec) return
+  const input = spec.inputs[inputKey]
+  if (!input) return
 
   if (input.type === 'user' || input.type === 'channel') {
     const groups: {
@@ -304,6 +334,7 @@ function getStepInputAccessory(
 
     for (const step of workflowSteps.slice(0, index)) {
       const spec = steps[step.type_id as keyof WorkflowStepMap]
+      if (!spec) continue
       const options: PlainTextOption[] = []
 
       let idx = 0

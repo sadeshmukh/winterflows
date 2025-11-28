@@ -191,6 +191,9 @@ function getValueFromState(action: ViewStateValue) {
         type: 'text',
         text: JSON.stringify(action.rich_text_value),
       }
+    case 'plain_text_input':
+      if (!action.value) return
+      return { type: 'text', text: action.value }
   }
 }
 
@@ -210,6 +213,11 @@ function getValue(action: BlockElementAction) {
         type: 'text',
         text: JSON.stringify(action.rich_text_value),
       })
+    case 'plain_text_input':
+      return JSON.stringify({
+        type: 'text',
+        text: JSON.stringify(action.value),
+      })
     default:
       return ''
   }
@@ -223,5 +231,7 @@ function getInitialValueFromState(action: ViewStateValue): any {
       return action.selected_conversation
     case 'rich_text_input':
       return action.rich_text_value
+    case 'plain_text_input':
+      return action.value
   }
 }

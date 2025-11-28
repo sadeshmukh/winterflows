@@ -1,12 +1,19 @@
 import slack from '../clients/slack'
 import type { ExecutionContext } from './context'
+import { advanceWorkflow } from './execute'
+
+export const PENDING = Symbol.for('Winterflows.PENDING')
+export type PENDING = typeof PENDING
 
 export type DataType = 'user' | 'channel' | 'text' | 'rich_text'
 
 export type StepFunction<
   Inputs extends Record<string, string> = Record<string, string>,
-  Outputs = void
-> = (ctx: ExecutionContext, inputs: Inputs) => Outputs | Promise<Outputs>
+  Outputs extends Record<string, string> = Record<string, string>
+> = (
+  ctx: ExecutionContext,
+  inputs: Inputs
+) => Outputs | PENDING | Promise<Outputs | PENDING>
 
 export type StepIOSpec<
   T extends Record<string, string> = Record<string, string>
@@ -20,22 +27,23 @@ export type StepIOSpec<
 
 type StepSpec<
   Inputs extends Record<string, string> = Record<string, string>,
-  Outputs = void
+  Outputs extends Record<string, string> = Record<string, string>
 > = {
   name: string
   inputs: StepIOSpec<Inputs>
-} & (Outputs extends {} ? { outputs: StepIOSpec<Outputs> } : {})
+  outputs: StepIOSpec<Outputs>
+}
 
 export type WorkflowStepSpec<
   Inputs extends Record<string, string> = Record<string, string>,
-  Outputs = void
+  Outputs extends Record<string, string> = Record<string, string>
 > = {
   func: StepFunction<Inputs, Outputs>
 } & StepSpec<Inputs, Outputs>
 
 function defineStep<
   Inputs extends Record<string, string> = Record<string, string>,
-  Outputs = void
+  Outputs extends Record<string, string> = Record<string, string>
 >(
   func: StepFunction<Inputs, Outputs>,
   spec: StepSpec<Inputs, Outputs>
@@ -59,22 +67,24 @@ async function sendMessageToUser(
   }
 }
 
+async function delayWorkflow(ctx: ExecutionContext, { ms }: { ms: string }) {
+  const time = parseFloat(ms)
+  if (isNaN(time)) {
+    throw new Error(`Failed to parse sleep duration \`${ms}\``)
+  }
+  setTimeout(() => advanceWorkflow(ctx.execution.id, ctx.step_id, {}), time)
+  return PENDING
+  return {}
+}
+
 // end steps
 
-const steps = {
+const steps: Record<string, WorkflowStepSpec<any, any>> = {
   'test-dm-user': defineStep(sendMessageToUser, {
     name: 'Send a message to a person',
     inputs: {
-      user_id: {
-        name: 'User',
-        required: true,
-        type: 'user',
-      },
-      message: {
-        name: 'message',
-        required: true,
-        type: 'rich_text',
-      },
+      user_id: { name: 'User', required: true, type: 'user' },
+      message: { name: 'Message', required: true, type: 'rich_text' },
     },
     outputs: {
       ts: {
@@ -84,7 +94,14 @@ const steps = {
       },
     },
   }),
-} as const
+  delay: defineStep(delayWorkflow, {
+    name: 'Delay execution',
+    inputs: {
+      ms: { name: 'Time (in ms)', required: true, type: 'text' },
+    },
+    outputs: {},
+  }),
+}
 
 export default steps
 export type WorkflowStepMap = typeof steps
