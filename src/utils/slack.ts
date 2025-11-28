@@ -3,6 +3,7 @@ import type {
   RichTextBlock,
   RichTextBlockElement,
   RichTextElement,
+  RichTextStyleable,
 } from '@slack/types'
 import slack from '../clients/slack'
 import { getConfigToken, updateConfigToken } from '../database/config_tokens'
@@ -69,7 +70,7 @@ function replaceRichTextBlockElement(
     case 'rich_text_section':
     default:
       for (const ele of element.elements)
-        elements.push(replaceRichTextElement(ele, replacements))
+        elements.push(...replaceRichTextElement(ele, replacements))
       element.elements = elements
       break
   }
@@ -78,27 +79,63 @@ function replaceRichTextBlockElement(
 function replaceRichTextElement(
   element: RichTextElement,
   replacements: Record<string, string>
-): RichTextElement {
-  if (element.type !== 'link' && element.type !== 'text') return element
+): RichTextElement[] {
+  if (element.type !== 'link' && element.type !== 'text') return [element]
 
-  // special case, when a text element's old text is exactly a key and the new text is
-  // exactly a mention, just convert to the appropriate block
+  let elements: RichTextElement[] = [element]
+
   if (element.type === 'text') {
+    // allow user and channel pings to work here
     for (const [old, repl] of Object.entries(replacements)) {
-      if (old !== element.text) continue
       let match: RegExpMatchArray | null
+      let replElement: RichTextElement | null = null
       if ((match = repl.match(/^<@(U[0-9A-Z]+)>$/))) {
         const userId = match[1]!
-        return { type: 'user', user_id: userId, style: element.style }
+        replElement = { type: 'user', user_id: userId, style: element.style }
       } else if ((match = repl.match(/^<#(C[0-9A-Z]+)>$/))) {
         const channelId = match[1]!
-        return { type: 'channel', channel_id: channelId, style: element.style }
+        replElement = {
+          type: 'channel',
+          channel_id: channelId,
+          style: element.style,
+        }
       }
+      if (!replElement) continue
+
+      const newElements: RichTextElement[] = []
+      for (const element of elements) {
+        if (element.type !== 'text') {
+          newElements.push(element)
+          continue
+        }
+        let index: number = -1
+        let text = element.text
+        while ((index = text.indexOf(old)) >= 0) {
+          const before = text.substring(0, index)
+          const after = text.substring(index + old.length)
+          console.log(before, replElement, after)
+          if (before)
+            newElements.push({
+              type: 'text',
+              text: before,
+              style: element.style,
+            })
+          newElements.push(replElement)
+          text = after
+        }
+        if (text) newElements.push({ type: 'text', text, style: element.style })
+      }
+
+      elements = newElements
     }
   }
 
-  element.text = element.text && replaceText(element.text, replacements)
-  return element
+  elements = normalizeRichTextElements(elements)
+
+  for (const element of elements)
+    if (element.type === 'text')
+      element.text = element.text && replaceText(element.text, replacements)
+  return elements
 }
 
 export function replaceText(
@@ -108,4 +145,42 @@ export function replaceText(
   for (const [old, repl] of Object.entries(replacements))
     text = text.replaceAll(old, repl)
   return text
+}
+
+export function normalizeRichTextElements(
+  elements: RichTextElement[]
+): RichTextElement[] {
+  const newElements: RichTextElement[] = []
+
+  for (const element of elements) {
+    if (newElements.length) {
+      const lastElement = newElements[newElements.length - 1]!
+      if (
+        lastElement.type === 'text' &&
+        element.type === 'text' &&
+        areStylesEqual(lastElement.style, element.style)
+      ) {
+        lastElement.text += element.text
+        continue
+      }
+    }
+    newElements.push(element)
+  }
+
+  return elements
+}
+
+function areStylesEqual(
+  left: RichTextStyleable['style'],
+  right: RichTextStyleable['style']
+) {
+  if (left === undefined) return right === undefined
+  if (right === undefined) return left === undefined
+  return (
+    left.bold === right.bold &&
+    left.code === right.code &&
+    left.italic === right.italic &&
+    left.strike === right.strike &&
+    left.underline === right.underline
+  )
 }
