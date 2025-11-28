@@ -3,7 +3,7 @@ import { startWorkflow } from '../workflows/execute'
 import { deleteWorkflowById, getWorkflowById } from '../database/workflows'
 import { updateCoreHomeTab } from './blocks'
 import slack from '../clients/slack'
-import { getActiveConfigToken } from '../utils/slack'
+import { getActiveConfigToken, respond } from '../utils/slack'
 
 export async function handleCoreInteraction(interaction: SlackAction) {
   if (interaction.type === 'block_actions') {
@@ -18,7 +18,7 @@ export async function handleCoreInteraction(interaction: SlackAction) {
 
       const { id } = JSON.parse(action.value!) as { id: number }
       const workflow = await getWorkflowById(id)
-      if (!workflow) return
+      if (!workflow) return respond(interaction, 'The workflow is not found!')
 
       await startWorkflow(workflow, interaction.user.id)
     } else if (actionId === 'search_workflows') {
@@ -36,10 +36,14 @@ export async function handleCoreInteraction(interaction: SlackAction) {
 
       const { id } = JSON.parse(action.value!) as { id: number }
       const workflow = await getWorkflowById(id)
-      if (!workflow) return
+      if (!workflow) return respond(interaction, 'The workflow is not found!')
 
       const configToken = await getActiveConfigToken()
-      if (!configToken) return
+      if (!configToken)
+        return respond(
+          interaction,
+          'No app config token was set, or it has expired. Please contact the devs for assistance.'
+        )
 
       await Promise.all([
         deleteWorkflowById(id),

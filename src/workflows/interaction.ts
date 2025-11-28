@@ -15,6 +15,7 @@ import { getWorkflowSteps } from '../utils/workflows'
 import { generateStepEditView, updateHomeTab } from './blocks'
 import { startWorkflow, type WorkflowStep } from './execute'
 import stepSpecs, { type WorkflowStepMap } from './steps'
+import { respond } from '../utils/slack'
 
 export async function handleInteraction(
   interaction: SlackAction | SlackViewAction
@@ -58,7 +59,7 @@ export async function handleInteraction(
 
       const { id } = JSON.parse(action.value!) as { id: number }
       const workflow = await getWorkflowById(id)
-      if (!workflow) return
+      if (!workflow) return respond(interaction, 'The workflow is not found!')
 
       await startWorkflow(workflow, interaction.user.id)
     } else if (actionId === 'manage_step') {
@@ -70,7 +71,8 @@ export async function handleInteraction(
         id: number
       }
       const workflow = await getWorkflowById(id)
-      if (!workflow || !workflow.access_token) return
+      if (!workflow || !workflow.access_token)
+        return respond(interaction, 'The workflow is not found!')
 
       const { action: method, id: stepId } = JSON.parse(
         action.selected_option.value
