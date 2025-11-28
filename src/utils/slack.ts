@@ -1,4 +1,6 @@
 import type { RespondArguments } from '@slack/bolt'
+import { getConfigToken, updateConfigToken } from '../database/config_tokens'
+import slack from '../clients/slack'
 
 export async function respond(
   event: { response_url: string },
@@ -15,4 +17,19 @@ export async function respond(
       'Content-Type': contentType,
     },
   })
+}
+
+export async function getActiveConfigToken() {
+  const token = await getConfigToken()
+  if (!token) return
+  if (token.expires_at > Date.now()) return token.access_token
+  const res = await slack.tooling.tokens.rotate({
+    refresh_token: token.refresh_token,
+  })
+  token.access_token = res.token!
+  token.refresh_token = res.refresh_token!
+  token.expires_at = res.exp! * 1000
+  await updateConfigToken(token)
+  console.log('Successfully rotated config token!')
+  return token.access_token
 }

@@ -68,7 +68,7 @@ export async function proceedWorkflow(execution: WorkflowExecution) {
   for (const key in spec.inputs) {
     let value = step.inputs[key]!
     for (const [old, replacement] of Object.entries(replacements)) {
-      value = value.replace(`$!{${old}}`, replacement)
+      value = value.replaceAll(`$!{${old}}`, replacement)
     }
     inputs[key] = value
   }

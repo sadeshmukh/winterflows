@@ -4,9 +4,8 @@ import type {
   AppsManifestCreateResponse,
 } from '@slack/web-api'
 import slack from '../clients/slack'
-import { getConfigToken } from '../database/config_tokens'
 import { addWorkflow } from '../database/workflows'
-import { respond } from '../utils/slack'
+import { getActiveConfigToken, respond } from '../utils/slack'
 
 const { EXTERNAL_URL } = process.env
 
@@ -23,16 +22,16 @@ async function handleCreateCommand(payload: SlashCommand) {
     return 'Please provide a name for the workflow.'
   }
 
-  const configToken = await getConfigToken()
+  const configToken = await getActiveConfigToken()
   if (!configToken) {
-    return 'No app config token was set. Please contact the devs for assistance.'
+    return 'No app config token was set, or it has expired. Please contact the devs for assistance.'
   }
 
   ;(async () => {
     let app: AppsManifestCreateResponse
     try {
       app = await slack.apps.manifest.create({
-        token: configToken.access_token,
+        token: configToken,
         manifest: generateManifest(name),
       })
     } catch (e) {
