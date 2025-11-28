@@ -52,7 +52,7 @@ export async function handleInteraction(
         updateHomeTab(workflow, interaction.user.id),
       ])
     } else if (actionId === 'run_workflow_home') {
-      // the "Run workflow" button in a message embed or app home is clicked
+      // the "Run workflow" button in the app home is clicked
 
       if (action.type !== 'button') return
 

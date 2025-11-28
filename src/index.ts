@@ -184,8 +184,7 @@ Bun.serve({
         workflow.access_token = token
         await updateWorkflow(workflow)
 
-        // todo: update workflow
-        return new Response('Thank you!')
+        return Response.redirect(`slack://app?id=${workflow.app_id}`)
       },
     },
 

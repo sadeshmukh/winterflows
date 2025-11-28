@@ -13,7 +13,7 @@ import steps from './steps'
 import slack from '../clients/slack'
 import { truncateText } from '../utils/formatting'
 
-const { EXTERNAL_URL } = process.env
+const { EXTERNAL_URL, SLACK_APP_ID } = process.env
 
 export async function updateHomeTab(workflow: Workflow, user: string) {
   if (!workflow.access_token) return
@@ -62,6 +62,11 @@ export async function generateWorkflowEditView(
           action_id: 'run_workflow_home',
           value: JSON.stringify({ id: workflow.id }),
           style: 'primary',
+        },
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: 'View all your workflows' },
+          url: `slack://app?id=${SLACK_APP_ID}`,
         },
       ],
     },

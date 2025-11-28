@@ -3,6 +3,7 @@ import type { KnownBlock, LinkUnfurls, SlackEvent } from '@slack/types'
 import slack from '../clients/slack'
 import { getWorkflowById } from '../database/workflows'
 import { generateWorkflowView } from '../workflows/blocks'
+import { updateCoreHomeTab } from './blocks'
 
 const { SLACK_BOT_TOKEN } = process.env
 
@@ -34,5 +35,9 @@ export async function handleCoreEvent({
       ts: event.message_ts,
       unfurls,
     })
+  } else if (event.type === 'app_home_opened') {
+    if (event.tab !== 'home') return
+
+    await updateCoreHomeTab(event.user)
   }
 }

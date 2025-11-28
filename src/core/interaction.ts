@@ -1,16 +1,17 @@
 import type { SlackAction } from '@slack/bolt'
 import { startWorkflow } from '../workflows/execute'
 import { getWorkflowById } from '../database/workflows'
+import { updateCoreHomeTab } from './blocks'
 
 export async function handleCoreInteraction(interaction: SlackAction) {
   if (interaction.type === 'block_actions') {
-    console.log(interaction)
-
     const action = interaction.actions[0]
     if (!action) return
     const actionId = action.action_id
 
     if (actionId === 'run_workflow_home') {
+      // the "Run workflow" button was pressed on the App Home or a message embed
+
       if (action.type !== 'button') return
 
       const { id } = JSON.parse(action.value!) as { id: number }
@@ -18,6 +19,14 @@ export async function handleCoreInteraction(interaction: SlackAction) {
       if (!workflow) return
 
       await startWorkflow(workflow, interaction.user.id)
+    } else if (actionId === 'search_workflows') {
+      // the search workflow input on App Home was submitted
+
+      if (action.type !== 'plain_text_input') return
+
+      const search = action.value
+
+      await updateCoreHomeTab(interaction.user.id, search)
     }
   }
 }

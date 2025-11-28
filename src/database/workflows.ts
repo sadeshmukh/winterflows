@@ -25,6 +25,13 @@ export async function getWorkflowByAppId(appId: string) {
   return result[0]
 }
 
+export async function getWorkflowsByCreator(creatorUserId: string) {
+  const result = await sql<
+    Workflow[]
+  >`SELECT * FROM workflows WHERE creator_user_id = ${creatorUserId}`
+  return result
+}
+
 export async function addWorkflow(
   workflow: Omit<Workflow, 'id' | 'steps' | 'description'>
 ) {
