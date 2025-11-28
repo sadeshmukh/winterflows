@@ -20,15 +20,13 @@ export async function handleInteraction(
   interaction: SlackAction | SlackViewAction
 ) {
   if (interaction.type === 'block_actions') {
-    console.log(interaction)
     const action = interaction.actions[0]
     if (!action) return
     const actionId = action.action_id
 
-    if (
-      actionId.startsWith('update_input:') ||
-      actionId.startsWith('update_category:')
-    ) {
+    if (actionId.startsWith('update_category:')) {
+      // a select menu for user or channel inputs is edited
+
       const [, workflowId, stepId, inputKey] = actionId.split(':')
 
       const workflow = await getWorkflowById(parseInt(workflowId!))
@@ -36,8 +34,6 @@ export async function handleInteraction(
 
       const value = JSON.parse(getValue(action))
       await updateWorkflowStepInput(workflow, stepId!, inputKey!, value)
-
-      console.log(interaction.view?.state.values)
 
       const currentState: Record<string, any> = {}
       for (const block of Object.values(interaction.view?.state.values || {})) {
@@ -56,6 +52,8 @@ export async function handleInteraction(
         updateHomeTab(workflow, interaction.user.id),
       ])
     } else if (actionId === 'run_workflow_home') {
+      // the "Run workflow" button in a message embed or app home is clicked
+
       if (action.type !== 'button') return
 
       const { id } = JSON.parse(action.value!) as { id: number }
@@ -63,22 +61,41 @@ export async function handleInteraction(
       if (!workflow) return
 
       await startWorkflow(workflow, interaction.user.id)
-    } else if (actionId === 'edit_step') {
-      if (action.type !== 'button') return
+    } else if (actionId === 'manage_step') {
+      // the overflow menu to the right of a step on the edit page is clicked
 
-      const { workflowId, stepId } = JSON.parse(action.value!) as {
-        workflowId: number
-        stepId: string
+      if (action.type !== 'overflow') return
+
+      const { id } = JSON.parse(interaction.view!.private_metadata) as {
+        id: number
       }
-      const workflow = await getWorkflowById(workflowId)
+      const workflow = await getWorkflowById(id)
       if (!workflow || !workflow.access_token) return
 
-      await slack.views.open({
-        token: workflow.access_token,
-        trigger_id: interaction.trigger_id,
-        view: await generateStepEditView(workflow, stepId),
-      })
+      const { action: method, id: stepId } = JSON.parse(
+        action.selected_option.value
+      ) as { action: 'edit' | 'delete'; id: string }
+
+      if (method === 'edit') {
+        await slack.views.open({
+          token: workflow.access_token,
+          trigger_id: interaction.trigger_id,
+          view: await generateStepEditView(workflow, stepId),
+        })
+      } else {
+        const steps = getWorkflowSteps(workflow)
+        const index = steps.findIndex((s) => s.id === stepId)
+        if (index < 0) return
+        steps.splice(index, 1)
+
+        workflow.steps = JSON.stringify(steps)
+        await updateWorkflow(workflow)
+
+        await updateHomeTab(workflow, interaction.user.id)
+      }
     } else if (actionId === 'new_step') {
+      // the "Add a step" select menu on the workflow edit page was edited
+
       if (action.type !== 'static_select') return
 
       const { w: id, s: stepId } = JSON.parse(action.selected_option.value) as {
@@ -110,8 +127,7 @@ export async function handleInteraction(
     }
   } else if (interaction.type === 'view_submission') {
     if (interaction.view.callback_id === 'step_edit') {
-      console.log(interaction)
-      console.log(interaction.view.state.values)
+      // a step edit modal was submitted
 
       const { id, stepId } = JSON.parse(interaction.view.private_metadata) as {
         id: number
@@ -122,17 +138,11 @@ export async function handleInteraction(
 
       for (const block of Object.values(interaction.view.state.values)) {
         for (const [actionId, state] of Object.entries(block)) {
-          console.log(actionId, state)
           if (!actionId.startsWith('update_input:')) continue
           const value = getValueFromState(state)
           if (!value) continue
           const [, , , inputKey] = actionId.split(':')
-          await updateWorkflowStepInput(
-            workflow,
-            stepId!,
-            inputKey!,
-            JSON.parse(value)
-          )
+          await updateWorkflowStepInput(workflow, stepId!, inputKey!, value)
         }
       }
 
@@ -147,7 +157,6 @@ async function updateWorkflowStepInput(
   inputKey: string,
   value: any
 ) {
-  console.log('update', stepId, inputKey, value)
   const steps = getWorkflowSteps(workflow)
   const stepIndex = steps.findIndex((s) => s.id === stepId)
   if (stepIndex < 0) return
@@ -167,19 +176,19 @@ function getValueFromState(action: ViewStateValue) {
   switch (action.type) {
     case 'users_select':
       if (!action.selected_user) return
-      return JSON.stringify({ type: 'text', text: action.selected_user })
+      return { type: 'text', text: action.selected_user }
     case 'conversations_select':
       if (!action.selected_conversation) return
-      return JSON.stringify({
+      return {
         type: 'text',
         text: action.selected_conversation,
-      })
+      }
     case 'rich_text_input':
       if (!action.rich_text_value) return
-      return JSON.stringify({
+      return {
         type: 'text',
         text: JSON.stringify(action.rich_text_value),
-      })
+      }
   }
 }
 

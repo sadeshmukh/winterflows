@@ -26,7 +26,11 @@ export async function updateHomeTab(workflow: Workflow, user: string) {
   await slack.views.publish({
     token: workflow.access_token,
     user_id: user,
-    view: { type: 'home', blocks },
+    view: {
+      type: 'home',
+      private_metadata: JSON.stringify({ id: workflow.id }),
+      blocks,
+    },
   })
 }
 
@@ -34,7 +38,7 @@ export async function generateWorkflowEditView(
   workflow: Workflow
 ): Promise<KnownBlock[]> {
   const stepBlocks = getWorkflowSteps(workflow).flatMap((s, i) =>
-    generateWorkflowStepBlocks(s, i, workflow)
+    generateWorkflowStepBlocks(s, i)
   )
 
   return [
@@ -90,8 +94,7 @@ export async function generateWorkflowEditView(
 
 function generateWorkflowStepBlocks<T extends keyof WorkflowStepMap>(
   step: WorkflowStep<T>,
-  index: number,
-  workflow: Workflow
+  index: number
 ): KnownBlock[] {
   const id = step.type_id
   const spec = steps[id]
@@ -107,10 +110,18 @@ function generateWorkflowStepBlocks<T extends keyof WorkflowStepMap>(
       type: 'section',
       text: { type: 'mrkdwn', text },
       accessory: {
-        type: 'button',
-        text: { type: 'plain_text', text: 'Edit' },
-        value: JSON.stringify({ workflowId: workflow.id, stepId: step.id }),
-        action_id: 'edit_step',
+        type: 'overflow',
+        options: [
+          {
+            text: { type: 'plain_text', text: 'Edit' },
+            value: JSON.stringify({ action: 'edit', id: step.id }),
+          },
+          {
+            text: { type: 'plain_text', text: 'Delete' },
+            value: JSON.stringify({ action: 'delete', id: step.id }),
+          },
+        ],
+        action_id: 'manage_step',
       },
     },
   ]
