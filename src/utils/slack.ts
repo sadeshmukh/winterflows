@@ -91,14 +91,10 @@ function replaceRichTextElement(
       let replElement: RichTextElement | null = null
       if ((match = repl.match(/^<@(U[0-9A-Z]+)>$/))) {
         const userId = match[1]!
-        replElement = { type: 'user', user_id: userId, style: element.style }
+        replElement = { type: 'user', user_id: userId }
       } else if ((match = repl.match(/^<#(C[0-9A-Z]+)>$/))) {
         const channelId = match[1]!
-        replElement = {
-          type: 'channel',
-          channel_id: channelId,
-          style: element.style,
-        }
+        replElement = { type: 'channel', channel_id: channelId }
       }
       if (!replElement) continue
 
