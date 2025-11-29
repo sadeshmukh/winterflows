@@ -165,7 +165,7 @@ export async function handleInteraction(
 
       if (input.type === 'text') {
         interaction.view!.state!.values[blockId]![actionId]!.value =
-          currentValue + textToAdd
+          (currentValue || '') + textToAdd
       } else if (input.type === 'rich_text') {
         const block = addTextToRichTextBlock(
           (currentValue as RichTextBlock) || {
@@ -183,7 +183,6 @@ export async function handleInteraction(
       for (const block of Object.values(interaction.view?.state.values || {})) {
         for (const [actionId, value] of Object.entries(block)) {
           if (!actionId.startsWith('update_input:')) continue
-          console.log(actionId, JSON.stringify(value))
           currentState[actionId] = getInitialValueFromState(value)
         }
       }
@@ -193,7 +192,6 @@ export async function handleInteraction(
         view_id: interaction.view!.id,
         view: await generateStepEditView(workflow, stepId!, currentState),
       })
-      // await slack.views.
     }
   } else if (interaction.type === 'view_submission') {
     if (interaction.view.callback_id === 'step_edit') {
