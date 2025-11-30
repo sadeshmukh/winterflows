@@ -1,8 +1,9 @@
-import { createTimeTrigger } from '../triggers/create'
-import { registerTriggerFunction } from '../triggers/functions'
-import type { ExecutionContext } from './context'
-import { advanceWorkflow } from './execute'
-import messagesSteps from './specs/messages'
+import { createTimeTrigger } from '../../triggers/create'
+import { registerTriggerFunction } from '../../triggers/functions'
+import type { ExecutionContext } from '../context'
+import { advanceWorkflow } from '../execute'
+
+import messagesSteps from './messages'
 
 export const PENDING = Symbol.for('Winterflows.PENDING')
 export type PENDING = typeof PENDING
@@ -22,6 +23,7 @@ export type StepIOSpec<
 > = {
   [K in keyof T]: {
     name: string
+    description?: string
     type: DataType
     required: boolean
   }
