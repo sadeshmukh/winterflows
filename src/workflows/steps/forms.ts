@@ -79,16 +79,8 @@ export default {
     name: 'Collect info in a form',
     category: 'Forms',
     inputs: {
-      title: {
-        type: 'text',
-        name: 'Form title',
-        required: true,
-      },
-      body: {
-        type: 'rich_text',
-        name: 'Form body text',
-        required: false,
-      },
+      title: { type: 'text', name: 'Form title', required: true },
+      body: { type: 'rich_text', name: 'Form body text', required: false },
       questions: {
         type: 'text',
         name: 'Questions',

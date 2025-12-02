@@ -56,6 +56,7 @@ export function defineStep<
 
 // steps
 
+import channelSteps from './channels'
 import formsSteps from './forms'
 import messagesSteps from './messages'
 
@@ -84,6 +85,7 @@ registerTriggerFunction('steps.delay.restart', async (trigger) => {
 const steps: Record<string, WorkflowStepSpec<any, any>> = {
   ...messagesSteps,
   ...formsSteps,
+  ...channelSteps,
   delay: defineStep(delayWorkflow, {
     name: 'Delay execution',
     category: 'Utilities',

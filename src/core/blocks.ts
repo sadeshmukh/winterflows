@@ -125,7 +125,7 @@ async function generateCoreHomeView(
     }
     for (const workflow of filteredWorkflows.slice(0, MAX_WORKFLOWS_PER_PAGE)) {
       const trigger = await getTriggersWhere(sql`workflow_id = ${workflow.id}`)
-      const runButtons: ActionsBlockElement[] = trigger
+      const runButtons: ActionsBlockElement[] = trigger.length
         ? []
         : [
             {
