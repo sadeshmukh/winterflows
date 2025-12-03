@@ -74,6 +74,19 @@ export async function respond(
   })
 }
 
+export async function getUserLink(token: string) {
+  const res = await slack.auth.test({ token })
+  return `https://hackclub.enterprise.slack.com/team/${res.user_id!}`
+}
+
+export async function getDMLink(user: string, token: string) {
+  const dm = await slack.conversations.open({
+    token,
+    users: user,
+  })
+  return `https://hackclub.enterprise.slack.com/archives/${dm.channel!.id!}`
+}
+
 export async function getActiveConfigToken() {
   const token = await getConfigToken()
   if (!token) return

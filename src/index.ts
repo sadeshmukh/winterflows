@@ -11,7 +11,7 @@ import {
 } from './database/workflows'
 import { getVerifiedData } from './signature'
 import { timeTriggerTask } from './triggers/task'
-import { getActiveConfigToken } from './utils/slack'
+import { getActiveConfigToken, getDMLink, getUserLink } from './utils/slack'
 import { handleWorkflowEvent } from './workflows/events'
 import { handleInteraction } from './workflows/interaction'
 
@@ -190,7 +190,9 @@ Bun.serve({
         workflow.access_token = token
         await updateWorkflow(workflow)
 
-        return Response.redirect(`slack://app?id=${workflow.app_id}&tab=home`)
+        return Response.redirect(
+          await getDMLink(workflow.creator_user_id, token)
+        )
       },
     },
 
@@ -199,7 +201,11 @@ Bun.serve({
       if (isNaN(id)) return new Response('Workflow not found', { status: 404 })
       const workflow = await getWorkflowById(id)
       if (!workflow) return new Response('Workflow not found', { status: 404 })
-      return Response.redirect(`slack://app?id=${workflow.app_id}&tab=home`)
+      if (!workflow.access_token)
+        return new Response(
+          'This workflow is not installed yet. Please contact the creator to authenticate it.'
+        )
+      return Response.redirect(await getUserLink(workflow.access_token))
     },
   },
   port: PORT,

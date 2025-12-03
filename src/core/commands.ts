@@ -2,15 +2,20 @@ import type { SlashCommand } from '@slack/bolt'
 import type { AppsManifestCreateResponse } from '@slack/web-api'
 import slack from '../clients/slack'
 import { addWorkflow } from '../database/workflows'
-import { generateManifest, getActiveConfigToken, respond } from '../utils/slack'
+import {
+  generateManifest,
+  getActiveConfigToken,
+  getDMLink,
+  respond,
+} from '../utils/slack'
 
-const { SLACK_APP_ID } = process.env
+const { SLACK_BOT_TOKEN } = process.env
 
 export async function handleCommand(payload: SlashCommand) {
   if (payload.command.endsWith('winterflows-create')) {
     return await handleCreateCommand(payload)
   } else if (payload.command.endsWith('winterflows')) {
-    return await handleRootCommand()
+    handleRootCommand(payload)
   }
   return ''
 }
@@ -58,13 +63,14 @@ async function handleCreateCommand(payload: SlashCommand) {
   })()
 }
 
-async function handleRootCommand() {
-  return Response.json({
+async function handleRootCommand(payload: SlashCommand) {
+  const url = await getDMLink(payload.user_id, SLACK_BOT_TOKEN!)
+  await respond(payload, {
     text: `\
 :hyper-dino-wave: Hi, and welcome to Winterflows!
 
 I'm here to replace Slack workflows as the long, cold winter of classic workflows settles in soon...
 
-To get started, <slack://app?id=${SLACK_APP_ID}|head over to my snowy app home>, or use the \`/winterflows-create\` command to create your first frosty workflow!`,
+To get started, <${url}|head over to my snowy app home>, or use the \`/winterflows-create\` command to create your first frosty workflow!`,
   })
 }
