@@ -33,7 +33,7 @@
   },
   "oauth_config": {
     "scopes": {
-      "bot": ["chat:write", "commands", "links:read", "links:write", "im:write"]
+      "bot": ["chat:write", "commands", "im:write", "links:read", "links:write"]
     }
   },
   "settings": {
@@ -43,7 +43,8 @@
     },
     "interactivity": {
       "is_enabled": true,
-      "request_url": "https://winterflows.davidwhy.me/slack/interaction"
+      "request_url": "https://winterflows.davidwhy.me/slack/interaction",
+      "message_menu_options_url": "https://winterflows.davidwhy.me/slack/interaction"
     },
     "org_deploy_enabled": false,
     "socket_mode_enabled": false,

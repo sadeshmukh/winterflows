@@ -18,7 +18,6 @@ import {
   generateManifest,
   getActiveConfigToken,
   respond,
-  type ManifestEvent,
 } from '../utils/slack'
 import { getWorkflowSteps } from '../utils/workflows'
 import { generateStepEditView, updateHomeTab } from './blocks'
@@ -37,8 +36,6 @@ import {
   registerTriggerFunction,
 } from '../triggers/functions'
 import { sql } from 'bun'
-
-const { SLACK_BOT_TOKEN } = process.env
 
 export async function handleInteraction(
   interaction: SlackAction | SlackViewAction | BlockSuggestion
