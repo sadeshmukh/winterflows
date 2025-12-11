@@ -4,6 +4,7 @@ import { deleteWorkflowById, getWorkflowById } from '../database/workflows'
 import { generateComponentsHelperView, updateCoreHomeTab } from './blocks'
 import slack from '../clients/slack'
 import { getActiveConfigToken, respond } from '../utils/slack'
+import { getUserById, updateOrCreateUser } from '../database/users'
 
 const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN!
 
@@ -115,6 +116,17 @@ export async function handleCoreInteraction(interaction: SlackAction) {
         token: SLACK_BOT_TOKEN,
         view_id: interaction.view!.id,
         view: await generateComponentsHelperView(count - 1),
+      })
+    } else if (action.action_id === 'rotate_api_key') {
+      // the "Rotate API key" button in /winterflows-api is clicked
+
+      let user = await getUserById(interaction.user.id)
+      if (!user) user = { id: interaction.user.id, api_key: null }
+      user.api_key = crypto.randomUUID()
+      await updateOrCreateUser(user)
+
+      await respond(interaction, {
+        text: `Successfully rotated API key! Your new key is \`${user.api_key}\`.`,
       })
     }
   }

@@ -27,6 +27,12 @@
         "url": "https://winterflows.davidwhy.me/slack/command",
         "description": "View information about the bot",
         "should_escape": false
+      },
+      {
+        "command": "/winterflows-api",
+        "url": "https://winterflows.davidwhy.me/slack/command",
+        "description": "View information about the API",
+        "should_escape": false
       }
     ],
     "unfurl_domains": ["winterflows.davidwhy.me"]
