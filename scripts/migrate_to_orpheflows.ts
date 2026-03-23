@@ -1,21 +1,27 @@
 /**
  * migrate_to_orpheflows.ts
  *
- * Exports winterflows workflows to an orpheflows-compatible JSON file.
- * The output can be imported into orpheflows to migrate workflows to the new system.
+ * Exports winterflows workflows to orpheflows-compatible format, producing both:
+ *   - Blockly workspace JSON (`blocks` column) — loadable in the visual editor
+ *   - Orphejson code (`code` column) — executable by the orpheflows engine
  *
  * Usage: bun scripts/migrate_to_orpheflows.ts [output.json]
  *
- * Limitations / things that need manual review after migration:
- *   - References to previous step outputs ($!{outputs.stepId.key}) are converted to
- *     text_embed placeholders and WON'T work until manually replaced with the right
- *     orpheflows blocks in the visual editor.
- *   - Branching (conditional steps) is flagged with a warning; orpheflows handles
- *     conditions through logic blocks that need to be rebuilt manually.
- *   - Trigger types with no orpheflows equivalent (cron, time, member_join, modal)
- *     need a manual listener setup in orpheflows.
- *   - Usergroup steps, delay/stop utilities, pin-message, set-channel-topic, and
- *     channel-kick have no direct orpheflows equivalent and are skipped.
+ * Step outputs ($!{outputs.X.Y}) are carried forward using Blockly variables:
+ *   - Steps that produce referenced outputs use the value-block variant
+ *     wrapped in variables_set.
+ *   - Later references become variables_get blocks.
+ *
+ * Branching (step.branching) is converted to controls_if blocks.
+ *
+ * Limitations (flagged as _warnings in output):
+ *   - rich_text inputs are kept as raw JSON strings; simplify in editor
+ *   - Mixed $!{} templates in a single string are kept as text_embed placeholders
+ *   - Trigger types cron/time/member_join/modal need manual listener setup
+ *   - Steps with no equivalent (usergroup-*, pin-message, set-channel-topic,
+ *     channel-kick, delay, stop, get-user-info) are skipped
+ *   - Button interaction outputs (component, user from dm-user) cannot be
+ *     migrated — the interaction model is fundamentally different
  */
 
 import { sql } from 'bun'
@@ -24,310 +30,621 @@ import type { WorkflowVersion } from '../src/database/workflow_versions'
 import type { Trigger } from '../src/database/triggers'
 
 // ---------------------------------------------------------------------------
-// Orpheflows block types
+// Types
 // ---------------------------------------------------------------------------
 
-interface OrpheBlock {
-  id: string
-  type: string
-  params: Record<string, OrpheParam>
-}
-
-type OrpheParam = OrpheBlock | OrpheBlock[] | string | null
-
-// ---------------------------------------------------------------------------
-// Step type mapping: winterflows type_id → orpheflows block type
-// null means "no equivalent, skip with warning"
-// ---------------------------------------------------------------------------
-
-const STEP_TYPE_MAP: Record<string, string | null> = {
-  // Messages
-  'dm-user': 'messaging_send_text',
-  'message-channel': 'messaging_send_text',
-  'message-reply': 'messaging_reply',
-  'react-message': 'messaging_add_reaction',
-  'unreact-message': 'messaging_unreact',
-  'send-ephemeral': 'messaging_send_text',
-  // Forms
-  'form-collect': 'form_present',
-  // Channels
-  'channel-invite': 'channel_invite',
-  'channel-kick': null, // no equivalent in orpheflows
-  'archive-channel': 'channel_archive',
-  'create-public-channel': 'channel_create',
-  'create-private-channel': 'channel_create',
-  'pin-message': null, // no equivalent in orpheflows
-  'set-channel-topic': null, // no equivalent in orpheflows
-  // Converters
-  'convert-user-to-id': 'user_to_id',
-  'convert-user-to-ping': 'user_mention',
-  'convert-user-id-to-user': 'user_from_id',
-  'convert-channel-to-id': 'channel_to_id',
-  'convert-id-to-channel': 'channel_from_id',
-  'convert-message-to-ts': 'message_to_ts',
-  'convert-message-to-channel': 'message_to_channel',
-  'convert-channel-ts-to-message': 'message_from_ts',
-  // Users
-  'get-user-info': null, // no equivalent in orpheflows
-  'usergroup-add': null, // no equivalent in orpheflows
-  'usergroup-remove': null, // no equivalent in orpheflows
-  'usergroup-create': null, // no equivalent in orpheflows
-  // Utilities
-  delay: null, // no equivalent in orpheflows
-  stop: null, // no equivalent in orpheflows
-}
-
-// ---------------------------------------------------------------------------
-// Value conversion helpers
-// ---------------------------------------------------------------------------
-
-function uid(): string {
-  return crypto.randomUUID()
-}
-
-/**
- * Wraps a plain string in a text_embed value block.
- */
-function textBlock(text: string): OrpheBlock {
-  return { id: uid(), type: 'text_embed', params: { TEXT: text } }
-}
-
-/**
- * Converts a winterflows input string to the appropriate orpheflows param.
- *
- * Handles the well-known $!{...} template patterns that can be converted
- * automatically.  Everything else is kept as a text_embed placeholder so
- * the workflow is importable even if not yet fully functional.
- */
-function convertInput(value: string | undefined | null, warnings: string[]): OrpheParam {
-  if (value == null || value === '') return null
-
-  // Pure single-reference values
-  if (/^\$!\{[^}]+\}$/.test(value)) {
-    return convertRef(value, warnings)
-  }
-
-  // Mixed content (literal text interleaved with references) — keep as-is
-  // and let the user update it in the orpheflows editor.
-  if (value.includes('$!{')) {
-    warnings.push(
-      `Input "${value}" contains mixed template variables — kept as placeholder, needs manual update`
-    )
-  }
-
-  return textBlock(value)
-}
-
-/**
- * Converts a pure $!{...} reference string to the matching orpheflows value block.
- */
-function convertRef(ref: string, warnings: string[]): OrpheParam {
-  if (ref === '$!{ctx.trigger_user_id}') {
-    return { id: uid(), type: 'trigger_user', params: {} }
-  }
-
-  if (ref === '$!{ctx.trigger_user_ping}') {
-    return {
-      id: uid(),
-      type: 'user_mention',
-      params: { USER: { id: uid(), type: 'trigger_user', params: {} } },
-    }
-  }
-
-  if (ref === '$!{trigger.message}') {
-    return { id: uid(), type: 'trigger_message', params: {} }
-  }
-
-  if (ref === '$!{trigger.user}') {
-    return { id: uid(), type: 'trigger_user', params: {} }
-  }
-
-  if (ref === '$!{trigger.trigger_id}') {
-    return { id: uid(), type: 'trigger_trigger_id', params: {} }
-  }
-
-  // Step output references like $!{outputs.stepId.key} can't be automatically
-  // converted because orpheflows has no equivalent "carry output forward"
-  // mechanism for statement blocks.  Leave as a placeholder.
-  if (ref.startsWith('$!{outputs.')) {
-    warnings.push(
-      `Output reference "${ref}" cannot be automatically converted — replace with the appropriate orpheflows block manually`
-    )
-    return textBlock(ref)
-  }
-
-  warnings.push(`Unknown template reference "${ref}" — kept as placeholder`)
-  return textBlock(ref)
-}
-
-// ---------------------------------------------------------------------------
-// Step conversion
-// ---------------------------------------------------------------------------
-
-interface ConvertedStep {
-  block: OrpheBlock | null
-  warnings: string[]
-}
-
-function convertStep(step: {
+/** A winterflows step as stored in workflow_versions.steps */
+interface WFStep {
   id: string
   type_id: string
   branching?: string
   inputs: Record<string, string>
-}): ConvertedStep {
-  const warnings: string[] = []
+}
 
-  if (!(step.type_id in STEP_TYPE_MAP)) {
-    warnings.push(`Unknown step type "${step.type_id}" — skipped`)
-    return { block: null, warnings }
-  }
+// === Orphejson types (flat code array for the execution engine) ===
 
-  const orpheType = STEP_TYPE_MAP[step.type_id]
-  if (orpheType === null) {
-    warnings.push(`Step type "${step.type_id}" has no orpheflows equivalent — skipped`)
-    return { block: null, warnings }
-  }
+interface CodeBlock {
+  id: string
+  type: string
+  params: Record<string, CodeParam>
+}
+type CodeParam = CodeBlock | CodeBlock[] | string | null
 
-  if (step.branching) {
-    warnings.push(
-      `Step "${step.id}" uses conditional branching — rebuild the condition using orpheflows logic blocks`
-    )
-  }
+// === Blockly workspace JSON types ===
 
-  const inp = (key: string) => convertInput(step.inputs[key], warnings)
+interface BlocklyWorkspace {
+  blocks: { languageVersion: 0; blocks: BlocklyBlock[] }
+  variables: BlocklyVariable[]
+}
 
-  let params: Record<string, OrpheParam> = {}
+interface BlocklyBlock {
+  type: string
+  id: string
+  x?: number
+  y?: number
+  extraState?: Record<string, unknown>
+  fields?: Record<string, unknown>
+  inputs?: Record<string, { block: BlocklyBlock } | { shadow: BlocklyBlock }>
+  next?: { block: BlocklyBlock }
+}
 
-  switch (step.type_id) {
-    case 'dm-user':
-      params = {
-        MODE: 'user',
-        USER: inp('user_id'),
-        TEXT: inp('message'),
-        EPHEMERAL: 'FALSE',
-        COMPS: step.inputs.components ? inp('components') : null,
-      }
-      break
-
-    case 'message-channel':
-      params = {
-        MODE: 'channel',
-        LOC: inp('channel'),
-        TEXT: inp('message'),
-        EPHEMERAL: 'FALSE',
-        COMPS: step.inputs.components ? inp('components') : null,
-      }
-      break
-
-    case 'message-reply':
-      params = {
-        LOC: inp('thread'),
-        TEXT: inp('message'),
-        COMPS: step.inputs.components ? inp('components') : null,
-      }
-      break
-
-    case 'send-ephemeral':
-      params = {
-        MODE: 'channel',
-        LOC: inp('channel'),
-        USER: inp('user'),
-        TEXT: inp('message'),
-        EPHEMERAL: 'TRUE',
-      }
-      break
-
-    case 'react-message':
-    case 'unreact-message':
-      params = {
-        MESSAGE: inp('message'),
-        EMOJI: inp('emoji'),
-      }
-      break
-
-    case 'form-collect':
-      params = {
-        TITLE: inp('title'),
-        TEXT: inp('body'),
-        QUESTIONS: inp('questions'),
-        // trigger_id must come from a block — use the trigger_trigger_id value block
-        TRIGGER_ID: { id: uid(), type: 'trigger_trigger_id', params: {} },
-        OUTPUT: textBlock(`${step.id}.0`),
-        TRIGGER_OUTPUT: textBlock(`${step.id}.trigger_id`),
-      }
-      break
-
-    case 'channel-invite':
-      params = {
-        CHANNEL: inp('channel'),
-        USER: inp('user'),
-      }
-      break
-
-    case 'archive-channel':
-      params = { CHANNEL: inp('channel') }
-      break
-
-    case 'create-public-channel':
-      params = { NAME: inp('name'), MODE: 'public' }
-      break
-
-    case 'create-private-channel':
-      params = { NAME: inp('name'), MODE: 'private' }
-      break
-
-    case 'convert-user-to-id':
-    case 'convert-user-id-to-user':
-      params = { USER: inp('value') }
-      break
-
-    case 'convert-user-to-ping':
-      params = { USER: inp('value') }
-      break
-
-    case 'convert-channel-to-id':
-    case 'convert-id-to-channel':
-      params = { CHANNEL: inp('value') }
-      break
-
-    case 'convert-message-to-ts':
-    case 'convert-message-to-channel':
-      params = { MESSAGE: inp('message') }
-      break
-
-    case 'convert-channel-ts-to-message':
-      params = {
-        CHANNEL: inp('channel'),
-        TS: inp('ts'),
-      }
-      break
-
-    default:
-      warnings.push(`No param mapping defined for step type "${step.type_id}" — skipped`)
-      return { block: null, warnings }
-  }
-
-  return { block: { id: step.id, type: orpheType, params }, warnings }
+interface BlocklyVariable {
+  name: string
+  id: string
 }
 
 // ---------------------------------------------------------------------------
-// Trigger → listener conversion
+// Step classification
 // ---------------------------------------------------------------------------
 
-interface ConvertedListener {
+/** null = no orpheflows equivalent */
+const STEP_MAP: Record<
+  string,
+  | null
+  | {
+      /** orpheflows block type for the value-block variant (produces output) */
+      value?: string
+      /** orpheflows block type for the statement-block variant */
+      stmt?: string
+      /** is this purely a value block with no side effects? */
+      pureValue?: boolean
+    }
+> = {
+  // Messages — value variant returns the sent message reference
+  'dm-user': { value: 'messaging_send_v1', stmt: 'messaging_send_v1_stmt' },
+  'message-channel': { value: 'messaging_send_v1', stmt: 'messaging_send_v1_stmt' },
+  'message-reply': { value: 'messaging_send_v1', stmt: 'messaging_send_v1_stmt' },
+  'send-ephemeral': { stmt: 'messaging_send_v1_stmt' }, // ephemeral returns ''
+  // Reactions — statement only
+  'react-message': { stmt: 'messaging_add_reaction' },
+  'unreact-message': { stmt: 'messaging_unreact' },
+  // Forms
+  'form-collect': { stmt: 'form_present' },
+  // Channels
+  'channel-invite': { stmt: 'channel_invite' },
+  'archive-channel': { stmt: 'channel_archive' },
+  'create-public-channel': { value: 'channel_create' },
+  'create-private-channel': { value: 'channel_create' },
+  // Converters — pure value blocks, no side effects
+  'convert-user-to-id': { value: 'user_to_id', pureValue: true },
+  'convert-user-to-ping': { value: 'user_mention', pureValue: true },
+  'convert-user-id-to-user': { value: 'user_from_id', pureValue: true },
+  'convert-channel-to-id': { value: 'channel_to_id', pureValue: true },
+  'convert-id-to-channel': { value: 'channel_from_id', pureValue: true },
+  'convert-message-to-ts': { value: 'message_to_ts', pureValue: true },
+  'convert-message-to-channel': { value: 'message_to_channel', pureValue: true },
+  'convert-channel-ts-to-message': { value: 'message_from_ts', pureValue: true },
+  // No equivalent
+  'channel-kick': null,
+  'pin-message': null,
+  'set-channel-topic': null,
+  'get-user-info': null,
+  'usergroup-add': null,
+  'usergroup-remove': null,
+  'usergroup-create': null,
+  delay: null,
+  stop: null,
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+let _counter = 0
+function uid(): string {
+  return crypto.randomUUID()
+}
+
+function varId(name: string): string {
+  return `var_${name.replace(/\./g, '_')}_${_counter++}`
+}
+
+// ---------------------------------------------------------------------------
+// Collect output references across all steps
+// ---------------------------------------------------------------------------
+
+/** Returns a Set of "stepId.outputKey" strings that are referenced. */
+function collectOutputRefs(steps: WFStep[]): Set<string> {
+  const refs = new Set<string>()
+  const pattern = /\$!\{outputs\.([^}]+)\}/g
+  for (const step of steps) {
+    for (const value of Object.values(step.inputs)) {
+      if (!value) continue
+      for (const m of value.matchAll(pattern)) {
+        refs.add(m[1]) // e.g. "step1.message"
+      }
+    }
+    if (step.branching) {
+      for (const m of step.branching.matchAll(pattern)) {
+        refs.add(m[1])
+      }
+    }
+  }
+  return refs
+}
+
+// ---------------------------------------------------------------------------
+// Input conversion → value blocks
+// ---------------------------------------------------------------------------
+
+/**
+ * Builds a value block (both CodeBlock and BlocklyBlock) for a winterflows
+ * input string.  Returns both representations at once.
+ */
+function convertInput(
+  value: string | undefined | null,
+  warnings: string[]
+): { code: CodeParam; blockly: BlocklyBlock | null } {
+  if (value == null || value === '') return { code: null, blockly: null }
+
+  // Pure single reference
+  if (/^\$!\{[^}]+\}$/.test(value)) {
+    return convertRef(value, warnings)
+  }
+
+  // Mixed templates
+  if (value.includes('$!{')) {
+    warnings.push(`Mixed template "${value}" — kept as text_embed placeholder, needs manual update`)
+  }
+
+  return makeText(value)
+}
+
+function makeText(text: string): { code: CodeBlock; blockly: BlocklyBlock } {
+  const id = uid()
+  return {
+    code: { id, type: 'text', params: { TEXT: text } },
+    blockly: { type: 'text', id, fields: { TEXT: text } },
+  }
+}
+
+function convertRef(
+  ref: string,
+  warnings: string[]
+): { code: CodeBlock; blockly: BlocklyBlock } {
+  if (ref === '$!{ctx.trigger_user_id}' || ref === '$!{trigger.user}') {
+    const id = uid()
+    return {
+      code: { id, type: 'trigger_user', params: {} },
+      blockly: { type: 'trigger_user', id },
+    }
+  }
+
+  if (ref === '$!{ctx.trigger_user_ping}') {
+    const id = uid()
+    const inner = convertRef('$!{ctx.trigger_user_id}', warnings)
+    return {
+      code: { id, type: 'user_mention', params: { USER: inner.code } },
+      blockly: { type: 'user_mention', id, inputs: { USER: { block: inner.blockly } } },
+    }
+  }
+
+  if (ref === '$!{trigger.message}') {
+    const id = uid()
+    return {
+      code: { id, type: 'trigger_message', params: {} },
+      blockly: { type: 'trigger_message', id },
+    }
+  }
+
+  if (ref === '$!{trigger.trigger_id}') {
+    const id = uid()
+    return {
+      code: { id, type: 'trigger_trigger_id', params: {} },
+      blockly: { type: 'trigger_trigger_id', id },
+    }
+  }
+
+  // $!{outputs.stepId.key} → variables_get
+  const outputMatch = ref.match(/^\$!\{outputs\.(.+)\}$/)
+  if (outputMatch) {
+    const varName = outputMatch[1]
+    const id = uid()
+    const vId = varId(varName)
+    return {
+      code: { id, type: 'variables_get', params: { VAR: varName } },
+      blockly: {
+        type: 'variables_get',
+        id,
+        fields: { VAR: { id: vId, name: varName, type: '' } },
+      },
+    }
+  }
+
+  warnings.push(`Unknown reference "${ref}" — kept as text_embed`)
+  return makeText(ref)
+}
+
+// ---------------------------------------------------------------------------
+// Build value block for a step's core action (messaging_send_v1, etc.)
+// Returns both code and blockly representations.
+// ---------------------------------------------------------------------------
+
+function buildValueBlock(
+  step: WFStep,
+  blockType: string,
+  warnings: string[]
+): { code: CodeBlock; blockly: BlocklyBlock } {
+  const id = step.id
+  const codeParams: Record<string, CodeParam> = {}
+  const blocklyFields: Record<string, unknown> = {}
+  const blocklyInputs: Record<string, { block: BlocklyBlock }> = {}
+  let extraState: Record<string, unknown> | undefined
+
+  function addValueInput(name: string, inputKey: string) {
+    const { code, blockly } = convertInput(step.inputs[inputKey], warnings)
+    if (code) codeParams[name] = code
+    if (blockly) blocklyInputs[name] = { block: blockly }
+  }
+
+  function addField(name: string, value: string) {
+    codeParams[name] = value
+    blocklyFields[name] = value
+  }
+
+  function addEmptyList(name: string) {
+    const listId = uid()
+    codeParams[name] = { id: listId, type: 'lists_create_with', params: {} }
+    blocklyInputs[name] = {
+      block: { type: 'lists_create_with', id: listId, extraState: { itemCount: 0 } },
+    }
+  }
+
+  switch (step.type_id) {
+    case 'dm-user': {
+      addField('MODE', 'USER')
+      addValueInput('LOC', 'user_id')
+      addValueInput('TEXT', 'message')
+      if (step.inputs.components) addValueInput('COMPS', 'components')
+      else addEmptyList('COMPS')
+      extraState = { mode: 'USER', ephemeral: false }
+      break
+    }
+    case 'message-channel': {
+      addField('MODE', 'CHANNEL')
+      addValueInput('LOC', 'channel')
+      addValueInput('TEXT', 'message')
+      if (step.inputs.components) addValueInput('COMPS', 'components')
+      else addEmptyList('COMPS')
+      extraState = { mode: 'CHANNEL', ephemeral: false }
+      break
+    }
+    case 'message-reply': {
+      addField('MODE', 'THREAD')
+      addValueInput('LOC', 'thread')
+      addValueInput('TEXT', 'message')
+      if (step.inputs.components) addValueInput('COMPS', 'components')
+      else addEmptyList('COMPS')
+      extraState = { mode: 'THREAD', ephemeral: false }
+      break
+    }
+    case 'send-ephemeral': {
+      addField('MODE', 'CHANNEL')
+      addField('EPHEMERAL', 'TRUE')
+      addValueInput('LOC', 'channel')
+      addValueInput('TEXT', 'message')
+      addValueInput('USER', 'user')
+      if (step.inputs.components) addValueInput('COMPS', 'components')
+      else addEmptyList('COMPS')
+      extraState = { mode: 'CHANNEL', ephemeral: true }
+      break
+    }
+    case 'react-message':
+    case 'unreact-message':
+      addValueInput('MESSAGE', 'message')
+      addValueInput('EMOJI', 'emoji')
+      break
+    case 'form-collect':
+      addValueInput('TITLE', 'title')
+      addValueInput('TEXT', 'body')
+      addValueInput('QUESTIONS', 'questions')
+      // trigger_id comes from trigger_trigger_id value block
+      {
+        const trigId = uid()
+        codeParams['TRIGGER_ID'] = { id: trigId, type: 'trigger_trigger_id', params: {} }
+        blocklyInputs['TRIGGER_ID'] = { block: { type: 'trigger_trigger_id', id: trigId } }
+      }
+      // OUTPUT and TRIGGER_OUTPUT are field_variable in Blockly
+      codeParams['OUTPUT'] = `${step.id}.responses`
+      codeParams['TRIGGER_OUTPUT'] = `${step.id}.trigger_id`
+      blocklyFields['OUTPUT'] = {
+        id: varId(`${step.id}.responses`),
+        name: `${step.id}.responses`,
+        type: '',
+      }
+      blocklyFields['TRIGGER_OUTPUT'] = {
+        id: varId(`${step.id}.trigger_id`),
+        name: `${step.id}.trigger_id`,
+        type: '',
+      }
+      break
+    case 'channel-invite':
+      addValueInput('USER', 'user')
+      addValueInput('CHANNEL', 'channel')
+      break
+    case 'archive-channel':
+      addValueInput('CHANNEL', 'channel')
+      break
+    case 'create-public-channel':
+      addField('MODE', 'PUBLIC')
+      addValueInput('NAME', 'name')
+      break
+    case 'create-private-channel':
+      addField('MODE', 'PRIVATE')
+      addValueInput('NAME', 'name')
+      break
+    case 'convert-user-to-id':
+      addValueInput('USER', 'value')
+      break
+    case 'convert-user-id-to-user':
+      addValueInput('ID', 'value')
+      break
+    case 'convert-user-to-ping':
+      addValueInput('USER', 'value')
+      break
+    case 'convert-channel-to-id':
+      addValueInput('CHANNEL', 'value')
+      break
+    case 'convert-id-to-channel':
+      addValueInput('ID', 'value')
+      break
+    case 'convert-message-to-ts':
+    case 'convert-message-to-channel':
+      addValueInput('MESSAGE', 'message')
+      break
+    case 'convert-channel-ts-to-message':
+      addValueInput('CHANNEL', 'channel')
+      addValueInput('TS', 'ts')
+      break
+    default:
+      warnings.push(`No param mapping for "${step.type_id}"`)
+  }
+
+  const codeBlock: CodeBlock = { id, type: blockType, params: codeParams }
+  const blocklyBlock: BlocklyBlock = { type: blockType, id }
+  if (extraState) blocklyBlock.extraState = extraState
+  if (Object.keys(blocklyFields).length) blocklyBlock.fields = blocklyFields
+  if (Object.keys(blocklyInputs).length) blocklyBlock.inputs = blocklyInputs
+
+  return { code: codeBlock, blockly: blocklyBlock }
+}
+
+// ---------------------------------------------------------------------------
+// Convert a winterflows step to statement block(s)
+// Returns code blocks (flat array) and a single Blockly statement block.
+// ---------------------------------------------------------------------------
+
+interface ConvertedStatement {
+  codeBlocks: CodeBlock[]
+  blocklyBlock: BlocklyBlock | null
+  variables: BlocklyVariable[]
+  warnings: string[]
+}
+
+function convertStepToStatement(
+  step: WFStep,
+  outputRefs: Set<string>
+): ConvertedStatement {
+  const warnings: string[] = []
+  const variables: BlocklyVariable[] = []
+
+  const spec = STEP_MAP[step.type_id]
+  if (spec === undefined) {
+    warnings.push(`Unknown step type "${step.type_id}" — skipped`)
+    return { codeBlocks: [], blocklyBlock: null, variables, warnings }
+  }
+  if (spec === null) {
+    warnings.push(`Step type "${step.type_id}" has no orpheflows equivalent — skipped`)
+    return { codeBlocks: [], blocklyBlock: null, variables, warnings }
+  }
+
+  // Check if any of this step's outputs are referenced
+  const needsOutput = [...outputRefs].some((ref) => ref.startsWith(step.id + '.'))
+
+  // For button interaction outputs — can't migrate
+  if (
+    needsOutput &&
+    ['dm-user', 'message-channel', 'message-reply'].includes(step.type_id)
+  ) {
+    const usedKeys = [...outputRefs]
+      .filter((r) => r.startsWith(step.id + '.'))
+      .map((r) => r.split('.').slice(1).join('.'))
+    for (const key of usedKeys) {
+      if (key === 'component' || key === 'user') {
+        warnings.push(
+          `Button interaction output "${step.id}.${key}" cannot be migrated — orpheflows handles button interactions differently`
+        )
+      }
+    }
+  }
+
+  // Determine block type and strategy
+  const useValue = needsOutput && spec.value
+  const blockType = useValue ? spec.value! : spec.stmt ?? spec.value!
+
+  // Pure value blocks with no references → skip entirely (no side effects)
+  if (spec.pureValue && !needsOutput) {
+    return { codeBlocks: [], blocklyBlock: null, variables, warnings }
+  }
+
+  // Build the core action block
+  const { code: actionCode, blockly: actionBlockly } = buildValueBlock(
+    step,
+    blockType,
+    warnings
+  )
+
+  // Handle branching → wrap in controls_if
+  let codeBlocks: CodeBlock[]
+  let blocklyBlock: BlocklyBlock
+
+  if (useValue) {
+    // Wrap in variables_set to capture the output
+    const outputKey = [...outputRefs]
+      .filter((r) => r.startsWith(step.id + '.'))
+      .find((r) => r.endsWith('.message') || r.endsWith('.id') || r.endsWith('.value'))
+      ?? `${step.id}.message`
+
+    const setId = uid()
+    const vId = varId(outputKey)
+    variables.push({ name: outputKey, id: vId })
+
+    codeBlocks = [
+      {
+        id: setId,
+        type: 'variables_set',
+        params: { VAR: outputKey, VALUE: actionCode },
+      },
+    ]
+    blocklyBlock = {
+      type: 'variables_set',
+      id: setId,
+      fields: { VAR: { id: vId, name: outputKey, type: '' } },
+      inputs: { VALUE: { block: actionBlockly } },
+    }
+  } else if (spec.pureValue) {
+    // Pure value block whose output IS needed → wrap in variables_set
+    const outputKey = `${step.id}.value`
+    const setId = uid()
+    const vId = varId(outputKey)
+    variables.push({ name: outputKey, id: vId })
+
+    codeBlocks = [
+      {
+        id: setId,
+        type: 'variables_set',
+        params: { VAR: outputKey, VALUE: actionCode },
+      },
+    ]
+    blocklyBlock = {
+      type: 'variables_set',
+      id: setId,
+      fields: { VAR: { id: vId, name: outputKey, type: '' } },
+      inputs: { VALUE: { block: actionBlockly } },
+    }
+  } else if (blockType === spec.value && !spec.stmt) {
+    // Value block with side effects but no statement variant → wrap in ignore_output
+    const ignoreId = uid()
+    codeBlocks = [
+      {
+        id: ignoreId,
+        type: 'ignore_output',
+        params: { VALUE: actionCode },
+      },
+    ]
+    blocklyBlock = {
+      type: 'ignore_output',
+      id: ignoreId,
+      inputs: { VALUE: { block: actionBlockly } },
+    }
+  } else {
+    // Regular statement block
+    codeBlocks = [actionCode]
+    blocklyBlock = actionBlockly
+  }
+
+  // form_present stores outputs in Blockly variables automatically
+  if (step.type_id === 'form-collect') {
+    const respVar = `${step.id}.responses`
+    const trigVar = `${step.id}.trigger_id`
+    variables.push(
+      { name: respVar, id: varId(respVar) },
+      { name: trigVar, id: varId(trigVar) }
+    )
+  }
+
+  // Handle branching → wrap in controls_if
+  if (step.branching) {
+    try {
+      const { left, op, right } = JSON.parse(step.branching) as {
+        left: string
+        op: string
+        right: string
+      }
+
+      const leftVal = convertInput(left, warnings)
+      const rightVal = convertInput(right, warnings)
+      const orpheOp = op === '==' ? 'EQ' : 'NEQ'
+
+      const condId = uid()
+      const ifId = uid()
+
+      // Condition value block
+      const condCode: CodeBlock = {
+        id: condId,
+        type: 'logic_compare',
+        params: {
+          OP: orpheOp,
+          A: leftVal.code ?? { id: uid(), type: 'text', params: { TEXT: '' } },
+          B: rightVal.code ?? { id: uid(), type: 'text', params: { TEXT: '' } },
+        },
+      }
+      const condBlockly: BlocklyBlock = {
+        type: 'logic_compare',
+        id: condId,
+        fields: { OP: orpheOp },
+        inputs: {
+          A: { block: leftVal.blockly ?? { type: 'text', id: uid(), fields: { TEXT: '' } } },
+          B: { block: rightVal.blockly ?? { type: 'text', id: uid(), fields: { TEXT: '' } } },
+        },
+      }
+
+      // Wrap: controls_if with DO0 containing original statement blocks
+      const wrappedCode: CodeBlock = {
+        id: ifId,
+        type: 'controls_if',
+        params: {
+          IF0: condCode,
+          DO0: codeBlocks,
+        },
+      }
+      const wrappedBlockly: BlocklyBlock = {
+        type: 'controls_if',
+        id: ifId,
+        inputs: {
+          IF0: { block: condBlockly },
+          DO0: { block: blocklyBlock },
+        },
+      }
+
+      codeBlocks = [wrappedCode]
+      blocklyBlock = wrappedBlockly
+    } catch {
+      warnings.push(
+        `Could not parse branching for step "${step.id}" — branching skipped`
+      )
+    }
+  }
+
+  return { codeBlocks, blocklyBlock, variables, warnings }
+}
+
+// ---------------------------------------------------------------------------
+// Trigger conversion
+// ---------------------------------------------------------------------------
+
+interface TriggerInfo {
+  /** MANUAL, REACTION, MESSAGE, DM, BUTTON, SLASH, etc. */
+  blocklyTriggerType: string
+  /** Extra fields on the trigger block (CHANNEL, EMOJI, ACTIONID, NAME) */
+  triggerFields: Record<string, string>
+  /** Listener event for the listeners table */
   event: string | null
+  /** Listener param */
   param: string | null
   paramNum: number | null
   warnings: string[]
 }
 
-function convertTrigger(trigger: Trigger | undefined): ConvertedListener {
+function convertTrigger(trigger: Trigger | undefined): TriggerInfo {
   if (!trigger) {
     return {
+      blocklyTriggerType: 'MANUAL',
+      triggerFields: {},
       event: null,
       param: null,
       paramNum: null,
-      warnings: ['No trigger found — set up a listener in orpheflows manually'],
+      warnings: ['No trigger found — defaults to MANUAL; set up a listener in orpheflows if needed'],
     }
   }
 
@@ -335,27 +652,91 @@ function convertTrigger(trigger: Trigger | undefined): ConvertedListener {
 
   switch (trigger.type) {
     case 'message':
-      return { event: 'message_received', param: trigger.val_string, paramNum: null, warnings }
+      return {
+        blocklyTriggerType: 'MESSAGE',
+        triggerFields: { CHANNEL: trigger.val_string ?? 'C' },
+        event: 'message_received',
+        param: trigger.val_string,
+        paramNum: null,
+        warnings,
+      }
 
     case 'reaction': {
-      // winterflows stores "channel|reaction", orpheflows expects "channel;reaction"
-      const param = trigger.val_string?.replace('|', ';') ?? null
-      return { event: 'reaction_added', param, paramNum: null, warnings }
+      // winterflows: "channel|reaction", orpheflows listener: "channel;reaction"
+      const parts = trigger.val_string?.split('|') ?? ['C', 'yay']
+      return {
+        blocklyTriggerType: 'REACTION',
+        triggerFields: { CHANNEL: parts[0], EMOJI: parts[1] ?? 'yay' },
+        event: 'reaction_added',
+        param: parts.join(';'),
+        paramNum: null,
+        warnings,
+      }
     }
 
     case 'time':
     case 'cron':
-    case 'member_join':
-    case 'modal':
       warnings.push(
-        `Trigger type "${trigger.type}" has no orpheflows equivalent — set up the listener manually`
+        `Trigger type "${trigger.type}" has no orpheflows equivalent — set up manually`
       )
-      return { event: null, param: null, paramNum: null, warnings }
+      return {
+        blocklyTriggerType: 'MANUAL',
+        triggerFields: {},
+        event: null,
+        param: null,
+        paramNum: null,
+        warnings,
+      }
+
+    case 'member_join':
+      warnings.push(
+        'Trigger type "member_join" has no orpheflows equivalent — set up manually'
+      )
+      return {
+        blocklyTriggerType: 'MANUAL',
+        triggerFields: {},
+        event: null,
+        param: null,
+        paramNum: null,
+        warnings,
+      }
+
+    case 'modal':
+      // Modal triggers are internal (button click → form), not a top-level trigger
+      return {
+        blocklyTriggerType: 'MANUAL',
+        triggerFields: {},
+        event: null,
+        param: null,
+        paramNum: null,
+        warnings: [
+          'Modal trigger is internal — the workflow will default to MANUAL trigger',
+        ],
+      }
 
     default:
-      warnings.push(`Unknown trigger type "${trigger.type}" — set up the listener manually`)
-      return { event: null, param: null, paramNum: null, warnings }
+      warnings.push(`Unknown trigger type "${trigger.type}" — defaults to MANUAL`)
+      return {
+        blocklyTriggerType: 'MANUAL',
+        triggerFields: {},
+        event: null,
+        param: null,
+        paramNum: null,
+        warnings,
+      }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Chain Blockly statement blocks via `next`
+// ---------------------------------------------------------------------------
+
+function chainBlockly(blocks: BlocklyBlock[]): BlocklyBlock | null {
+  if (blocks.length === 0) return null
+  for (let i = blocks.length - 2; i >= 0; i--) {
+    blocks[i].next = { block: blocks[i + 1] }
+  }
+  return blocks[0]
 }
 
 // ---------------------------------------------------------------------------
@@ -385,33 +766,80 @@ async function migrate() {
       SELECT * FROM triggers WHERE workflow_id = ${workflow.id}
     `
 
-    const warnings: string[] = []
-    const steps: Array<{
-      id: string
-      type_id: string
-      branching?: string
-      inputs: Record<string, string>
-    }> = version ? JSON.parse(version.steps) : []
+    const allWarnings: string[] = []
+    const allVariables: BlocklyVariable[] = []
+    const steps: WFStep[] = version ? JSON.parse(version.steps) : []
 
-    // Convert each action step to an orpheflows block
-    const actionBlocks: OrpheBlock[] = []
+    // 1. Collect all output references
+    const outputRefs = collectOutputRefs(steps)
+
+    // 2. Convert trigger
+    const triggerInfo = convertTrigger(trigger)
+    allWarnings.push(...triggerInfo.warnings)
+
+    // 3. Convert each step to statement block(s)
+    const codeStatements: CodeBlock[] = []
+    const blocklyStatements: BlocklyBlock[] = []
+
     for (const step of steps) {
-      const { block, warnings: sw } = convertStep(step)
-      warnings.push(...sw)
-      if (block) actionBlocks.push(block)
+      const { codeBlocks, blocklyBlock, variables, warnings } =
+        convertStepToStatement(step, outputRefs)
+      allWarnings.push(...warnings)
+      allVariables.push(...variables)
+      codeStatements.push(...codeBlocks)
+      if (blocklyBlock) blocklyStatements.push(blocklyBlock)
     }
 
-    // Wrap everything in a trigger block (orpheflows top-level structure)
+    // Also add variables referenced by variables_get that aren't yet declared
+    for (const ref of outputRefs) {
+      if (!allVariables.some((v) => v.name === ref)) {
+        allVariables.push({ name: ref, id: varId(ref) })
+      }
+    }
+
+    // 4. Build trigger block
+
     const triggerBlockId = uid()
-    const triggerBlock: OrpheBlock = {
+
+    // -- Orphejson code: flat array starting with trigger, then statements
+    const triggerCodeParams: Record<string, CodeParam> = {
+      TRIGGER: triggerInfo.blocklyTriggerType,
+    }
+    for (const [k, v] of Object.entries(triggerInfo.triggerFields)) {
+      triggerCodeParams[k] = v
+    }
+    const triggerCodeBlock: CodeBlock = {
       id: triggerBlockId,
       type: 'trigger',
-      params: { DO: actionBlocks },
+      params: triggerCodeParams,
+    }
+    const codeArray: CodeBlock[] = [triggerCodeBlock, ...codeStatements]
+
+    // -- Blockly workspace: trigger block with next chain
+    const triggerBlocklyFields: Record<string, string> = {
+      TRIGGER: triggerInfo.blocklyTriggerType,
+      ...triggerInfo.triggerFields,
+    }
+    const triggerBlockly: BlocklyBlock = {
+      type: 'trigger',
+      id: triggerBlockId,
+      x: 50,
+      y: 50,
+      extraState: { trigger: triggerInfo.blocklyTriggerType },
+      fields: triggerBlocklyFields,
     }
 
-    const { event, param, paramNum, warnings: tw } = convertTrigger(trigger)
-    warnings.push(...tw)
+    const firstStatement = chainBlockly(blocklyStatements)
+    if (firstStatement) {
+      triggerBlockly.next = { block: firstStatement }
+    }
 
+    const workspace: BlocklyWorkspace = {
+      blocks: { languageVersion: 0, blocks: [triggerBlockly] },
+      variables: allVariables,
+    }
+
+    // 5. Assemble result
     results.push({
       workflow: {
         name: workflow.name,
@@ -421,19 +849,24 @@ async function migrate() {
         clientId: workflow.client_id,
         clientSecret: workflow.client_secret,
         signingSecret: workflow.signing_secret,
-        // winterflows doesn't have a verification token; set manually after import
-        verificationToken: '',
-        blocks: null,
-        code: JSON.stringify([triggerBlock]),
+        verificationToken: '', // not in winterflows; set manually after import
+        blocks: JSON.stringify(workspace),
+        code: JSON.stringify(codeArray),
       },
       installation: workflow.access_token
         ? { userId: workflow.creator_user_id, token: workflow.access_token }
         : null,
-      listener: event
-        ? { event, param, paramNum, handler: triggerBlockId, data: null }
+      listener: triggerInfo.event
+        ? {
+            event: triggerInfo.event,
+            param: triggerInfo.param,
+            paramNum: triggerInfo.paramNum,
+            handler: triggerBlockId,
+            data: null,
+          }
         : null,
       _source: { winterflows_id: workflow.id, version_id: version?.id ?? null },
-      _warnings: warnings,
+      _warnings: allWarnings,
     })
   }
 
@@ -454,9 +887,11 @@ async function migrate() {
     console.log('\nWarnings:')
     for (const r of results) {
       if (r._warnings.length === 0) continue
-      console.log(`  Workflow "${r.workflow.name}" (winterflows #${r._source.winterflows_id}):`)
+      console.log(
+        `  Workflow "${r.workflow.name}" (winterflows #${r._source.winterflows_id}):`
+      )
       for (const w of r._warnings) {
-        console.log(`    • ${w}`)
+        console.log(`    - ${w}`)
       }
     }
   }
